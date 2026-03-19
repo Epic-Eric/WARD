@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd:*)",
+      "Bash(pip3 install:*)",
+      "Read(//Users/ericx/.platformio/penv/bin/**)",
+      "Bash(python3:*)",
+      "Bash(pio run:*)",
+      "Bash(~/.platformio/penv/bin/pio run:*)"
+    ]
+  }
+}
