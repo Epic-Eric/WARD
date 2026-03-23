@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <VL53L1X.h>
+#include "point_cloud.h"
 
 // Pin definitions
 #define PITCH_DIR_PIN  2
@@ -17,8 +18,8 @@
 #define MAX_PITCH_STEPS 20
 
 // Nano RP2040 Connect I2C pins
-#define SDA_PIN 18  // A4
-#define SCL_PIN 19  // A5
+#define SDA_PIN 8  // A4
+#define SCL_PIN 9  // A5
 MbedI2C MyWire(SDA_PIN, SCL_PIN);
 
 VL53L1X sensor;
@@ -97,7 +98,7 @@ void setup() {
 
     Serial.println("WASD Stepper Control Ready");
     Serial.println("W=pitch up  S=pitch down  A=yaw left  D=yaw right");
-    Serial.println("G=start sweep");
+    Serial.println("G=start sweep  P=point cloud scan");
 
     MyWire.begin();
     MyWire.setClock(400000);
@@ -125,6 +126,19 @@ void setup() {
 }
 
 void loop() {
+    // print distance every 500ms
+        static unsigned long lastPrint = 0;
+        if (millis() - lastPrint >= 500) {
+            double dist = get_distance();
+            Serial.print("Distance: ");
+            if (dist >= 0) {
+                Serial.print(dist);
+                Serial.println(" mm");
+            } else {
+                Serial.println("Error");
+            }
+            lastPrint = millis();
+        }
     if (Serial.available()) {
         char c = Serial.read();
 
@@ -143,6 +157,9 @@ void loop() {
                 break;
             case 'g':
                 sweep(MAX_YAW_STEPS, MAX_PITCH_STEPS);
+                break;
+            case 'p':
+                point_cloud_scan(STEP_DELAY_US);
                 break;
         }
     }
