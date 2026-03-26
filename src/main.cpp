@@ -1,8 +1,10 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <VL53L1X.h>
 #include <Stepper.h>
+#include <VL53L1X.h>
 #include <WiFiNINA.h>
+#include <Wire.h>
+
+#include <cstring>
 
 namespace Config {
 constexpr unsigned long kSerialBaudRate = 115200;
@@ -17,8 +19,7 @@ constexpr unsigned long kWifiRetryDelayMs = 1500;
 constexpr unsigned long kServerRetryDelayMs = 1000;
 constexpr unsigned long kSampleSettleDelayMs = 80;
 constexpr unsigned long kSensorWaitTimeoutMs = 120;
-constexpr unsigned long kFramePauseMs = 300;
-constexpr unsigned long kClientCloseDelayMs = 100;
+constexpr unsigned long kIdlePollDelayMs = 20;
 
 constexpr int kSdaPin = 8;
 constexpr int kSclPin = 9;
@@ -51,7 +52,24 @@ constexpr float kPitchSweepEndDeg = 0.0f;
 constexpr float kYawSweepStartDeg = 0.0f;
 constexpr float kYawSweepEndDeg = 20.0f;
 constexpr float kYawSweepStepDeg = 1.0f;
+
+constexpr size_t kCommandBufferSize = 48;
 }  // namespace Config
+
+enum class RobotCommand {
+    None,
+    StartScan,
+    StopScan,
+    HardStop,
+    ReleaseMotors,
+};
+
+enum class ScanOutcome {
+    Completed,
+    Stopped,
+    HardStopped,
+    HardStoppedReleased,
+};
 
 struct Point3D {
     float x;
@@ -85,6 +103,10 @@ public:
     StepperAxis(int pin1, int pin2, int pin3, int pin4, float anglePerStepDeg,
                 float initialAngleDeg, float homeAngleDeg)
         : motor_(Config::kStepsPerRevolution, pin1, pin2, pin3, pin4),
+          pin1_(pin1),
+          pin2_(pin2),
+          pin3_(pin3),
+          pin4_(pin4),
           anglePerStepDeg_(anglePerStepDeg),
           currentAngleDeg_(initialAngleDeg),
           homeAngleDeg_(homeAngleDeg) {}
@@ -104,12 +126,21 @@ public:
         currentAngleDeg_ += static_cast<float>(steps) * anglePerStepDeg_;
     }
 
-    void zero() { moveTo(0.0f); }
-
     void toStartingPosition() { moveTo(homeAngleDeg_); }
+
+    void release() {
+        digitalWrite(pin1_, LOW);
+        digitalWrite(pin2_, LOW);
+        digitalWrite(pin3_, LOW);
+        digitalWrite(pin4_, LOW);
+    }
 
 private:
     Stepper motor_;
+    int pin1_;
+    int pin2_;
+    int pin3_;
+    int pin4_;
     float anglePerStepDeg_;
     float currentAngleDeg_;
     float homeAngleDeg_;
@@ -160,16 +191,19 @@ private:
     MbedI2C& bus_;
 };
 
-class PointCloudStreamer {
+class RobotLink {
 public:
-    PointCloudStreamer(const char* ssid, const char* password, const char* serverHost,
-                       IPAddress serverFallbackIp, uint16_t serverPort)
+    RobotLink(const char* ssid, const char* password, const char* serverHost,
+              IPAddress serverFallbackIp, uint16_t serverPort)
         : ssid_(ssid),
           password_(password),
           serverHost_(serverHost),
           serverFallbackIp_(serverFallbackIp),
           serverPort_(serverPort),
-          lastServerConnectAttemptMs_(0) {}
+          lastServerConnectAttemptMs_(0),
+          commandLength_(0) {
+        commandBuffer_[0] = '\0';
+    }
 
     bool begin() {
         if (WiFi.status() == WL_NO_MODULE) {
@@ -182,9 +216,117 @@ public:
         return true;
     }
 
-    bool beginFrame(uint32_t frameId) {
+    RobotCommand pollCommand() {
         if (!ensureServerConnection()) {
-            Serial.println("WARN: Server unavailable, frame will only be logged on Serial.");
+            return RobotCommand::None;
+        }
+
+        while (client_.connected() && client_.available() > 0) {
+            const int raw = client_.read();
+            if (raw < 0) {
+                break;
+            }
+
+            const char ch = static_cast<char>(raw);
+            if (ch == '\r') {
+                continue;
+            }
+
+            if (ch == '\n') {
+                commandBuffer_[commandLength_] = '\0';
+                commandLength_ = 0;
+
+                if (strcmp(commandBuffer_, "START_SCAN") == 0) {
+                    Serial.println("Received command START_SCAN");
+                    return RobotCommand::StartScan;
+                }
+
+                if (strcmp(commandBuffer_, "STOP_SCAN") == 0) {
+                    Serial.println("Received command STOP_SCAN");
+                    return RobotCommand::StopScan;
+                }
+
+                if (strcmp(commandBuffer_, "HARD_STOP") == 0) {
+                    Serial.println("Received command HARD_STOP");
+                    return RobotCommand::HardStop;
+                }
+
+                if (strcmp(commandBuffer_, "RELEASE_MOTORS") == 0) {
+                    Serial.println("Received command RELEASE_MOTORS");
+                    return RobotCommand::ReleaseMotors;
+                }
+
+                if (commandBuffer_[0] != '\0') {
+                    Serial.print("Ignoring unknown command: ");
+                    Serial.println(commandBuffer_);
+                }
+                continue;
+            }
+
+            if (commandLength_ < Config::kCommandBufferSize - 1) {
+                commandBuffer_[commandLength_++] = ch;
+            } else {
+                commandLength_ = 0;
+                commandBuffer_[0] = '\0';
+                Serial.println("Command buffer overflow. Dropping input line.");
+            }
+        }
+
+        return RobotCommand::None;
+    }
+
+    void sendState(const char* state) {
+        if (!client_.connected()) {
+            return;
+        }
+
+        client_.print("STATE,");
+        client_.println(state);
+    }
+
+    void sendSensorTimeout(const char* reason) {
+        if (!client_.connected()) {
+            return;
+        }
+
+        client_.print("SENSOR_TIMEOUT,");
+        client_.println(reason);
+    }
+
+    void sendSensorStatus(const char* status) {
+        if (!client_.connected()) {
+            return;
+        }
+
+        client_.print("SENSOR_STATUS,");
+        client_.println(status);
+    }
+
+    void sendPose(float yawDeg, float pitchDeg) {
+        if (!client_.connected()) {
+            return;
+        }
+
+        client_.print("POSE,");
+        client_.print(yawDeg, 2);
+        client_.print(",");
+        client_.println(pitchDeg, 2);
+    }
+
+    void sendAbort(const char* reason, uint32_t frameId) {
+        if (!client_.connected()) {
+            return;
+        }
+
+        client_.print("ABORT,");
+        client_.print(frameId);
+        client_.print(",");
+        client_.println(reason);
+    }
+
+    bool beginFrame(uint32_t frameId) {
+        if (!client_.connected() && !ensureServerConnection()) {
+            Serial.println("WARN: No server connection for frame start.");
             return false;
         }
 
@@ -254,25 +396,21 @@ public:
         client_.println(pointCount);
     }
 
-    void close() {
-        if (!client_.connected()) {
-            return;
+    void discardPendingInput() {
+        while (client_.connected() && client_.available() > 0) {
+            client_.read();
         }
-
-        client_.flush();
-        delay(Config::kClientCloseDelayMs);
-        client_.stop();
-        Serial.println("Server connection closed.");
+        commandLength_ = 0;
+        commandBuffer_[0] = '\0';
     }
 
 private:
     void connectWifiBlocking() {
         Serial.println("Connecting to WiFi... Looking for available networks...");
-        int n = WiFi.scanNetworks();
-        // List available networks for debugging, but don't fail if the target SSID isn't found since it could be hidden.
+        const int networkCount = WiFi.scanNetworks();
         Serial.println("Available WiFi networks:");
-        for (int i = 0; i < n; i++) {
-             Serial.println(WiFi.SSID(i));
+        for (int i = 0; i < networkCount; ++i) {
+            Serial.println(WiFi.SSID(i));
         }
 
         while (WiFi.status() != WL_CONNECTED) {
@@ -293,23 +431,13 @@ private:
         Serial.println(WiFi.localIP());
     }
 
-    bool ensureServerConnection() {
-        if (WiFi.status() != WL_CONNECTED) {
-            connectWifiBlocking();
-        }
+    void sendHello() {
+        client_.println("HELLO,NANO_RP2040_CONNECT,POINT_CLOUD_V3");
+        sendState("IDLE");
+        sendSensorStatus("READY");
+    }
 
-        if (client_.connected()) {
-            return true;
-        }
-
-        const unsigned long nowMs = millis();
-        if (nowMs - lastServerConnectAttemptMs_ < Config::kServerRetryDelayMs) {
-            return false;
-        }
-        lastServerConnectAttemptMs_ = nowMs;
-
-        client_.stop();
-
+    bool connectToServer() {
         IPAddress resolvedIp;
         if (WiFi.hostByName(serverHost_, resolvedIp) == 1) {
             Serial.print("Resolved server host ");
@@ -318,7 +446,7 @@ private:
             Serial.println(resolvedIp);
 
             if (client_.connect(resolvedIp, serverPort_)) {
-                client_.println("HELLO,NANO_RP2040_CONNECT,POINT_CLOUD_V1");
+                sendHello();
                 Serial.println("Server connected.");
                 return true;
             }
@@ -339,9 +467,30 @@ private:
             return false;
         }
 
-        client_.println("HELLO,NANO_RP2040_CONNECT,POINT_CLOUD_V1");
+        sendHello();
         Serial.println("Server connected.");
         return true;
+    }
+
+    bool ensureServerConnection() {
+        if (WiFi.status() != WL_CONNECTED) {
+            connectWifiBlocking();
+        }
+
+        if (client_.connected()) {
+            return true;
+        }
+
+        const unsigned long nowMs = millis();
+        if (nowMs - lastServerConnectAttemptMs_ < Config::kServerRetryDelayMs) {
+            return false;
+        }
+        lastServerConnectAttemptMs_ = nowMs;
+
+        client_.stop();
+        commandLength_ = 0;
+        commandBuffer_[0] = '\0';
+        return connectToServer();
     }
 
     const char* ssid_;
@@ -351,49 +500,99 @@ private:
     uint16_t serverPort_;
     unsigned long lastServerConnectAttemptMs_;
     WiFiClient client_;
+    char commandBuffer_[Config::kCommandBufferSize];
+    size_t commandLength_;
 };
 
 class PointCloudScanner {
 public:
     PointCloudScanner(StepperAxis& yawAxis, StepperAxis& pitchAxis,
-                      DistanceSensor& distanceSensor, PointCloudStreamer& streamer)
+                      DistanceSensor& distanceSensor, RobotLink& robotLink)
         : yawAxis_(yawAxis),
           pitchAxis_(pitchAxis),
           distanceSensor_(distanceSensor),
-          streamer_(streamer),
+          robotLink_(robotLink),
           nextFrameId_(1) {}
 
     void begin() {
         yawAxis_.setSpeedRpm(Config::kYawMotorSpeedRpm);
         pitchAxis_.setSpeedRpm(Config::kPitchMotorSpeedRpm);
-
-        pitchAxis_.moveTo(0.0f);
-        yawAxis_.moveTo(0.0f);
+        yawAxis_.toStartingPosition();
+        pitchAxis_.toStartingPosition();
+        robotLink_.sendPose(yawAxis_.currentAngleDeg(), pitchAxis_.currentAngleDeg());
+        robotLink_.sendSensorStatus("READY");
     }
 
-    void runFrame() {
+    ScanOutcome runFrame() {
         const uint32_t frameId = nextFrameId_++;
         uint16_t pointIndex = 0;
+        bool softStopRequested = false;
+        bool hardStopRequested = false;
+        bool releaseRequested = false;
+        bool sensorTimeoutSeen = false;
 
         Serial.print("Starting frame ");
         Serial.println(frameId);
 
-        const bool networkEnabled = streamer_.beginFrame(frameId);
+        robotLink_.sendState("SCANNING");
+        const bool networkEnabled = robotLink_.beginFrame(frameId);
+
+        auto applyCommand = [&](RobotCommand command) {
+            switch (command) {
+                case RobotCommand::StopScan:
+                    if (!softStopRequested) {
+                        softStopRequested = true;
+                        robotLink_.sendState("STOPPING");
+                    }
+                    break;
+                case RobotCommand::HardStop:
+                    if (!hardStopRequested) {
+                        hardStopRequested = true;
+                        robotLink_.sendState("HARD_STOPPING");
+                    }
+                    break;
+                case RobotCommand::ReleaseMotors:
+                    if (!releaseRequested) {
+                        releaseRequested = true;
+                        hardStopRequested = true;
+                        robotLink_.sendState("RELEASING");
+                    }
+                    break;
+                default:
+                    break;
+            }
+        };
 
         for (float yawTarget = Config::kYawSweepStartDeg;
              yawTarget <= Config::kYawSweepEndDeg + 0.001f;
              yawTarget += Config::kYawSweepStepDeg) {
+            applyCommand(robotLink_.pollCommand());
+            if (hardStopRequested) {
+                break;
+            }
+
             yawAxis_.moveTo(yawTarget);
 
             for (float pitchTarget = Config::kPitchSweepStartDeg;
                  pitchTarget <= Config::kPitchSweepEndDeg + 0.001f;
                  pitchTarget += Config::kPitchAnglePerStepDeg) {
+                applyCommand(robotLink_.pollCommand());
+                if (hardStopRequested) {
+                    break;
+                }
+
                 pitchAxis_.moveTo(pitchTarget);
                 delay(Config::kSampleSettleDelayMs);
+                robotLink_.sendPose(yawAxis_.currentAngleDeg(), pitchAxis_.currentAngleDeg());
 
                 uint16_t distanceMm = 0;
                 const char* errorText = nullptr;
                 if (!distanceSensor_.readDistanceMm(distanceMm, errorText)) {
+                    robotLink_.sendSensorStatus(errorText);
+                    if (!sensorTimeoutSeen && strcmp(errorText, "SENSOR_TIMEOUT") == 0) {
+                        sensorTimeoutSeen = true;
+                        robotLink_.sendSensorTimeout(errorText);
+                    }
                     Serial.print("Skipping point at yaw=");
                     Serial.print(yawAxis_.currentAngleDeg(), 2);
                     Serial.print(" pitch=");
@@ -413,22 +612,49 @@ public:
                     sphericalToCartesian(static_cast<float>(distanceMm), point.yawDeg,
                                          point.pitchDeg);
 
-                streamer_.sendPoint(point, networkEnabled);
+                robotLink_.sendSensorStatus("RANGE_VALID");
+                robotLink_.sendPoint(point, networkEnabled);
+
+                applyCommand(robotLink_.pollCommand());
+                if (hardStopRequested) {
+                    break;
+                }
+            }
+
+            if (hardStopRequested || softStopRequested) {
+                break;
             }
         }
 
-        streamer_.endFrame(frameId, pointIndex, networkEnabled);
+        robotLink_.endFrame(frameId, pointIndex, networkEnabled);
+        if (hardStopRequested) {
+            robotLink_.sendAbort(releaseRequested ? "RELEASE_MOTORS" : "HARD_STOP", frameId);
+            robotLink_.sendState("IDLE");
+            robotLink_.sendPose(yawAxis_.currentAngleDeg(), pitchAxis_.currentAngleDeg());
+            robotLink_.discardPendingInput();
+            return releaseRequested ? ScanOutcome::HardStoppedReleased
+                                    : ScanOutcome::HardStopped;
+        }
 
-        pitchAxis_.moveTo(0.0f);
-        yawAxis_.moveTo(0.0f);
-        delay(Config::kFramePauseMs);
+        if (softStopRequested) {
+            robotLink_.sendAbort("STOP_SCAN", frameId);
+            robotLink_.sendState("IDLE");
+            robotLink_.sendPose(yawAxis_.currentAngleDeg(), pitchAxis_.currentAngleDeg());
+            robotLink_.discardPendingInput();
+            return ScanOutcome::Stopped;
+        }
+
+        robotLink_.sendState("IDLE");
+        robotLink_.sendPose(yawAxis_.currentAngleDeg(), pitchAxis_.currentAngleDeg());
+        robotLink_.discardPendingInput();
+        return ScanOutcome::Completed;
     }
 
 private:
     StepperAxis& yawAxis_;
     StepperAxis& pitchAxis_;
     DistanceSensor& distanceSensor_;
-    PointCloudStreamer& streamer_;
+    RobotLink& robotLink_;
     uint32_t nextFrameId_;
 };
 
@@ -440,14 +666,23 @@ StepperAxis kPitchAxis(Config::kPitchPin1, Config::kPitchPin2, Config::kPitchPin
                        Config::kPitchPin4, Config::kPitchAnglePerStepDeg,
                        Config::kPitchStartingAngleDeg, Config::kPitchStartingAngleDeg);
 DistanceSensor kDistanceSensor(kI2cBus);
-PointCloudStreamer kStreamer(Config::kWifiSsid, Config::kWifiPassword,
-                             Config::kServerHost, Config::kServerFallbackIp,
-                             Config::kServerPort);
-PointCloudScanner kScanner(kYawAxis, kPitchAxis, kDistanceSensor, kStreamer);
-bool gScanEnded = false;
+RobotLink kRobotLink(Config::kWifiSsid, Config::kWifiPassword, Config::kServerHost,
+                     Config::kServerFallbackIp, Config::kServerPort);
+PointCloudScanner kScanner(kYawAxis, kPitchAxis, kDistanceSensor, kRobotLink);
+
+void resetToStartingPosition() {
+    kPitchAxis.toStartingPosition();
+    kYawAxis.toStartingPosition();
+}
+
+void releaseAllMotors() {
+    kPitchAxis.release();
+    kYawAxis.release();
+}
 
 void setup() {
     Serial.begin(Config::kSerialBaudRate);
+    Serial.println("Point cloud scanner starting up... It might take a few seconds to initialize.");
     delay(2000);
 
     kI2cBus.begin();
@@ -459,32 +694,45 @@ void setup() {
         }
     }
 
-    if (!kStreamer.begin()) {
+    if (!kRobotLink.begin()) {
         while (true) {
             delay(10);
         }
     }
 
     kScanner.begin();
-    Serial.println("Point cloud scanner ready.");
-}
-
-void resetToStartingPosition() {
-    kPitchAxis.toStartingPosition();
-    kYawAxis.toStartingPosition();
+    Serial.println("Point cloud scanner ready. Waiting for START_SCAN.");
 }
 
 void loop() {
-    if (gScanEnded) {
-        while (true) {
-            delay(1000);
+    const RobotCommand command = kRobotLink.pollCommand();
+    if (command == RobotCommand::StartScan) {
+        const ScanOutcome outcome = kScanner.runFrame();
+        if (outcome == ScanOutcome::Completed || outcome == ScanOutcome::Stopped) {
+            resetToStartingPosition();
+            kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
         }
+
+        if (outcome == ScanOutcome::Completed) {
+            Serial.println("Scan complete. Waiting for next command.");
+        } else if (outcome == ScanOutcome::Stopped) {
+            Serial.println("Scan stopped. Waiting for next command.");
+        } else if (outcome == ScanOutcome::HardStoppedReleased) {
+            releaseAllMotors();
+            kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
+            Serial.println("Release command received. Motors released.");
+        } else {
+            kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
+            Serial.println("Hard stop received. Holding current position.");
+        }
+    } else if (command == RobotCommand::ReleaseMotors) {
+        releaseAllMotors();
+        kRobotLink.sendState("MOTORS_RELEASED");
+        kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
+        Serial.println("Motors released while idle.");
+    } else if (command == RobotCommand::StopScan || command == RobotCommand::HardStop) {
+        Serial.println("Robot is idle. Stop command ignored.");
     }
 
-    kScanner.runFrame();
-    kStreamer.close();
-    gScanEnded = true;
-    resetToStartingPosition();
-
-    Serial.println("Scan complete. Scanner stopped.");
+    delay(Config::kIdlePollDelayMs);
 }
