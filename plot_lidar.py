@@ -1,5 +1,5 @@
 """
-LIDAR Scanner — Serial reader & 2D top-down plot.
+LIDAR Scanner — Serial reader & 3D point cloud plot.
 
 Usage:
     python plot_lidar.py              # auto-detect serial port
@@ -8,17 +8,32 @@ Usage:
 """
 
 import sys
+import csv
 import math
 import time
-import serial
-import serial.tools.list_ports
 import numpy as np
 import matplotlib.pyplot as plt
 
 
+def import_serial_modules():
+    try:
+        import serial
+        import serial.tools.list_ports
+    except ModuleNotFoundError as exc:
+        print("Serial mode requires the `pyserial` package.")
+        print("You installed the unrelated `serial` package.")
+        print("Fix with:")
+        print("  pip uninstall serial")
+        print("  pip install pyserial")
+        raise SystemExit(1) from exc
+
+    return serial, serial.tools.list_ports
+
+
 def find_port():
     """Auto-detect the Arduino serial port."""
-    ports = serial.tools.list_ports.comports()
+    _, list_ports = import_serial_modules()
+    ports = list_ports.comports()
     for p in ports:
         desc = (p.description or "").lower()
         if any(k in desc for k in ["arduino", "rp2040", "usb modem", "usbmodem"]):
@@ -31,6 +46,7 @@ def find_port():
 
 def run_scan(port):
     """Connect to Arduino, send 'scan', and collect CSV lines."""
+    serial, _ = import_serial_modules()
     print(f"Connecting to {port} ...")
     ser = serial.Serial(port, 115200, timeout=2)
     time.sleep(2)  # wait for Arduino reset
@@ -76,9 +92,53 @@ def run_scan(port):
     return data
 
 
+def spherical_to_cartesian_meters(yaw_deg, pitch_deg, dist_mm):
+    if dist_mm == 0:
+        return None
+
+    yaw = math.radians(yaw_deg)
+    pitch = math.radians(pitch_deg)
+    dist_m = dist_mm / 1000.0
+
+    cos_pitch = math.cos(pitch)
+    x_m = dist_m * cos_pitch * math.cos(yaw)
+    y_m = dist_m * cos_pitch * math.sin(yaw)
+    z_m = dist_m * math.sin(pitch)
+    return (x_m, y_m, z_m, dist_m)
+
+
+def convert_scan_samples_to_points(samples):
+    points = []
+    for yaw_deg, pitch_deg, dist_mm in samples:
+        point = spherical_to_cartesian_meters(yaw_deg, pitch_deg, dist_mm)
+        if point is not None:
+            points.append(point)
+    return points
+
+
 def load_csv(path):
     """Load previously saved CSV data."""
     data = []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+
+        if reader.fieldnames is None:
+            return data
+
+        fieldnames = {name.strip() for name in reader.fieldnames}
+
+        if {"frame_id", "point_index", "distance_mm", "x_mm", "y_mm", "z_mm"} <= fieldnames:
+            for row in reader:
+                try:
+                    x_m = float(row["x_mm"]) / 1000.0
+                    y_m = float(row["y_mm"]) / 1000.0
+                    z_m = float(row["z_mm"]) / 1000.0
+                    dist_m = float(row["distance_mm"]) / 1000.0
+                except (TypeError, ValueError):
+                    continue
+                data.append((x_m, y_m, z_m, dist_m))
+            return data
+
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -86,7 +146,16 @@ def load_csv(path):
                 continue
             parts = line.split(",")
             if len(parts) == 3:
-                data.append((float(parts[0]), float(parts[1]), float(parts[2])))
+                try:
+                    yaw_deg = float(parts[0])
+                    pitch_deg = float(parts[1])
+                    dist_mm = float(parts[2])
+                except ValueError:
+                    continue
+
+                point = spherical_to_cartesian_meters(yaw_deg, pitch_deg, dist_mm)
+                if point is not None:
+                    data.append(point)
     return data
 
 
@@ -98,53 +167,41 @@ def save_csv(data, path="scan_data.csv"):
     print(f"Data saved to {path}")
 
 
-def plot_topdown(data):
+def plot_point_cloud_3d(data):
     """
-    Project each (yaw, pitch, distance) point onto the horizontal plane
-    and plot a top-down 2D map.
-
-    Projection:
-        horizontal_dist = distance * cos(pitch)
-        x = horizontal_dist * sin(yaw)
-        y = horizontal_dist * cos(yaw)
+    Plot a 3D point cloud from Cartesian (x, y, z, distance) points.
     """
-    xs, ys, colors = [], [], []
+    xs, ys, zs, colors = [], [], [], []
 
-    for yaw_deg, pitch_deg, dist_mm in data:
-        if dist_mm == 0:
-            continue  # skip invalid readings
-
-        yaw   = math.radians(yaw_deg)
-        pitch = math.radians(pitch_deg)
-        dist_m = dist_mm / 1000.0  # convert to meters
-
-        horiz = dist_m * math.cos(pitch)
-        x = horiz * math.sin(yaw)
-        y = horiz * math.cos(yaw)
-
-        xs.append(x)
-        ys.append(y)
+    for x_m, y_m, z_m, dist_m in data:
+        xs.append(x_m)
+        ys.append(y_m)
+        zs.append(z_m)
         colors.append(dist_m)
 
     xs = np.array(xs)
     ys = np.array(ys)
+    zs = np.array(zs)
     colors = np.array(colors)
 
-    fig, ax = plt.subplots(figsize=(10, 10))
-    sc = ax.scatter(xs, ys, c=colors, cmap="viridis_r", s=4, alpha=0.8)
+    fig = plt.figure(figsize=(11, 9))
+    ax = fig.add_subplot(111, projection="3d")
+    sc = ax.scatter(xs, ys, zs, c=colors, cmap="viridis_r", s=6, alpha=0.85)
     cbar = plt.colorbar(sc, ax=ax, shrink=0.7)
     cbar.set_label("Distance (m)")
 
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
-    ax.set_title("LIDAR Top-Down 2D Map")
-    ax.set_aspect("equal")
-    ax.plot(0, 0, "r+", markersize=15, markeredgewidth=2)  # sensor position
+    ax.set_zlabel("Z (m)")
+    ax.set_title("LIDAR 3D Point Cloud")
+    ax.scatter([0], [0], [0], c="red", marker="+", s=120, linewidths=2)
     ax.grid(True, alpha=0.3)
+    ax.set_box_aspect((np.ptp(xs) or 1.0, np.ptp(ys) or 1.0, np.ptp(zs) or 1.0))
+    ax.view_init(elev=25, azim=45)
 
     plt.tight_layout()
-    plt.savefig("lidar_map.png", dpi=150)
-    print("Plot saved to lidar_map.png")
+    plt.savefig("lidar_point_cloud_3d.png", dpi=150)
+    print("Plot saved to lidar_point_cloud_3d.png")
     plt.show()
 
 
@@ -159,11 +216,12 @@ if __name__ == "__main__":
         if not port:
             print("No serial port found. Specify one: python plot_lidar.py /dev/cu.usbmodemXXXX")
             sys.exit(1)
-        data = run_scan(port)
-        save_csv(data)
+        raw_data = run_scan(port)
+        save_csv(raw_data)
+        data = convert_scan_samples_to_points(raw_data)
 
     if not data:
         print("No data collected.")
         sys.exit(1)
 
-    plot_topdown(data)
+    plot_point_cloud_3d(data)
