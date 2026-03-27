@@ -232,6 +232,60 @@ def point_map_from_samples(
     return point_map
 
 
+def normalize_bundle_view_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    samples = payload.get("samples")
+    if not isinstance(samples, list) or not samples:
+        return None
+
+    normalized_samples: list[dict[str, float | int | bool]] = []
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, dict):
+            continue
+        try:
+            normalized_samples.append(
+                {
+                    "frame_id": int(sample.get("frame_id", 1)),
+                    "point_index": int(sample.get("point_index", index)),
+                    "yaw_deg": float(sample["yaw_deg"]),
+                    "pitch_deg": float(sample["pitch_deg"]),
+                    "distance_mm": float(sample["distance_mm"]),
+                    "x_mm": float(sample["x_mm"]),
+                    "y_mm": float(sample["y_mm"]),
+                    "z_mm": float(sample["z_mm"]),
+                    "is_air": bool(sample.get("is_air", False)),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    if not normalized_samples:
+        return None
+
+    return {
+        "samples": normalized_samples,
+        "render_mode": str(payload.get("render_mode", "raw")),
+    }
+
+
+def infer_scan_degrees_from_samples(samples: list[dict[str, float | int | bool]]) -> float | None:
+    yaw_values = sorted(
+        {
+            round(float(sample["yaw_deg"]), 2)
+            for sample in samples
+        }
+    )
+    if not yaw_values:
+        return None
+    inferred = max(1.0, yaw_values[-1] - yaw_values[0])
+    try:
+        return normalize_scan_degrees(inferred)
+    except ValueError:
+        return None
+
+
 def infer_axis_grid(
     point_map: dict[tuple[int, int], dict[str, float | int]],
     axis_name: str,
@@ -1406,6 +1460,87 @@ class ScanAutomationController:
                 self._pending_operation = None
                 self._operation_thread = None
 
+    def import_baseline_from_view(
+        self,
+        view_payload: dict[str, Any],
+        scan_degrees: float | None = None,
+        source_name: str | None = None,
+    ) -> None:
+        normalized_view = normalize_bundle_view_payload(view_payload)
+        if normalized_view is None:
+            raise RuntimeError("Imported baseline payload did not contain valid samples.")
+
+        normalized_samples = normalized_view["samples"]
+        resolved_scan_degrees = scan_degrees
+        if resolved_scan_degrees is None:
+            inferred_scan_degrees = infer_scan_degrees_from_samples(normalized_samples)
+            if inferred_scan_degrees is not None:
+                resolved_scan_degrees = inferred_scan_degrees
+            else:
+                resolved_scan_degrees = DEFAULT_SCAN_DEGREES
+        resolved_scan_degrees = normalize_scan_degrees(float(resolved_scan_degrees))
+
+        with self._lock:
+            if self._pending_operation is not None:
+                raise RuntimeError("Wait for the current automation operation to finish.")
+            if self._monitoring_active:
+                raise RuntimeError("Stop monitoring before importing a baseline.")
+
+        self.baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.baseline_path.open("w", newline="", encoding="utf-8") as file_obj:
+            writer = csv.writer(file_obj)
+            writer.writerow(
+                [
+                    "frame_id",
+                    "point_index",
+                    "yaw_deg",
+                    "pitch_deg",
+                    "distance_mm",
+                    "x_mm",
+                    "y_mm",
+                    "z_mm",
+                ]
+            )
+            for sample in normalized_samples:
+                writer.writerow(
+                    [
+                        int(sample["frame_id"]),
+                        int(sample["point_index"]),
+                        format_optional_float(float(sample["yaw_deg"])),
+                        format_optional_float(float(sample["pitch_deg"])),
+                        format_optional_float(float(sample["distance_mm"])),
+                        format_optional_float(float(sample["x_mm"])),
+                        format_optional_float(float(sample["y_mm"])),
+                        format_optional_float(float(sample["z_mm"])),
+                    ]
+                )
+
+        saved_at = datetime.now().isoformat(timespec="seconds")
+        source_capture = source_name or "imported_bundle"
+        write_json(
+            self.baseline_meta_path,
+            {
+                "saved_at": saved_at,
+                "source_capture": source_capture,
+                "scan_degrees": resolved_scan_degrees,
+            },
+        )
+
+        with self._lock:
+            self._baseline_exists = True
+            self._baseline_degrees = resolved_scan_degrees
+            self._baseline_saved_at = saved_at
+            self._baseline_source_capture = source_capture
+            self._baseline_point_map = load_pose_point_map(self.baseline_path)
+            self._baseline_surface_samples = build_surface_samples(
+                self._baseline_point_map,
+                fill_air=True,
+            )
+            self._automation_error = None
+            self._automation_event = (
+                f"Imported baseline from {source_capture} at {resolved_scan_degrees:.2f} degrees."
+            )
+
     def delete_baseline(self) -> None:
         with self._lock:
             if self._pending_operation is not None:
@@ -1558,6 +1693,69 @@ async def read_scan_degrees(request: Request) -> float:
         ) from exc
 
 
+async def read_baseline_import(request: Request) -> tuple[dict[str, Any], float | None, str | None]:
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from exc
+
+    source_view = str(payload.get("source_view", "baseline")).strip().lower()
+    if source_view not in {"baseline", "raw"}:
+        raise HTTPException(status_code=400, detail="source_view must be baseline or raw.")
+
+    bundle = payload.get("bundle")
+    view_payload: dict[str, Any] | None = None
+    source_name = payload.get("source_name")
+    scan_degrees: float | None = None
+
+    if isinstance(bundle, dict):
+        bundle_views = bundle.get("views")
+        if not isinstance(bundle_views, dict):
+            raise HTTPException(status_code=400, detail="Bundle did not contain views.")
+        preferred_payload = bundle_views.get(source_view)
+        if not isinstance(preferred_payload, dict) and source_view == "baseline":
+            preferred_payload = bundle_views.get("raw")
+        if not isinstance(preferred_payload, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="Bundle did not contain an importable baseline or raw view.",
+            )
+        view_payload = preferred_payload
+        if not source_name:
+            source_name = str(payload.get("source_name") or bundle.get("imported_name") or "imported_bundle")
+
+        bundle_status = bundle.get("status")
+        if isinstance(bundle_status, dict):
+            candidate_scan_degrees = bundle_status.get("baseline_degrees")
+            if candidate_scan_degrees is None:
+                candidate_scan_degrees = bundle_status.get("configured_scan_degrees")
+            if candidate_scan_degrees is not None:
+                try:
+                    scan_degrees = normalize_scan_degrees(float(candidate_scan_degrees))
+                except (TypeError, ValueError):
+                    scan_degrees = None
+    else:
+        direct_view = payload.get("view")
+        if not isinstance(direct_view, dict):
+            raise HTTPException(status_code=400, detail="Missing importable view payload.")
+        view_payload = direct_view
+        if not source_name:
+            source_name = "imported_view"
+
+    raw_scan_degrees = payload.get("scan_degrees")
+    if raw_scan_degrees is not None:
+        try:
+            scan_degrees = normalize_scan_degrees(float(raw_scan_degrees))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"scan_degrees must be between 0 and {MAX_SCAN_DEGREES:.0f}.",
+            ) from exc
+
+    assert view_payload is not None
+    return view_payload, scan_degrees, source_name
+
+
 if FastAPI is not None:
     app = FastAPI(title="WARD Point Cloud Control")
 
@@ -1683,6 +1881,20 @@ if FastAPI is not None:
 
         try:
             automation.start_baseline_save(scan_degrees)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        return combined_status()
+
+    @app.post("/api/baseline/import")
+    async def api_import_baseline(request: Request) -> dict[str, Any]:
+        view_payload, scan_degrees, source_name = await read_baseline_import(request)
+        try:
+            automation.import_baseline_from_view(
+                view_payload,
+                scan_degrees=scan_degrees,
+                source_name=source_name,
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

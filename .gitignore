@@ -5,3 +5,10 @@
 .vscode/ipch
 captures/
 node_modules/
+
+__pycache__/
+
+dist/
+
+.vscode/
+.claude/

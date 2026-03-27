@@ -421,7 +421,9 @@
           <button id="hard-stop" class="danger">Hard Stop</button>
           <button id="release-motors" class="steel">Release Motors</button>
           <button id="zero-turret" class="steel">Zero Turret</button>
+          <button id="import-baseline" class="secondary">Import Baseline</button>
           <button id="delete-baseline" class="danger">Delete Baseline</button>
+          <input id="import-baseline-file" type="file" accept="application/json,.json" hidden>
         </div>
       </div>
     </section>
@@ -526,6 +528,8 @@
     const hardStopButton = document.getElementById("hard-stop");
     const releaseButton = document.getElementById("release-motors");
     const zeroButton = document.getElementById("zero-turret");
+    const importBaselineButton = document.getElementById("import-baseline");
+    const importBaselineFileInput = document.getElementById("import-baseline-file");
     const deleteBaselineButton = document.getElementById("delete-baseline");
     const scanDegreesInput = document.getElementById("scan-degrees");
     const eventLog = document.getElementById("event-log");
@@ -708,6 +712,7 @@
       hardStopButton.disabled = !connected || !scanning;
       releaseButton.disabled = !connected;
       zeroButton.disabled = !connected || scanning || monitoring || busyAutomation;
+      importBaselineButton.disabled = monitoring || busyAutomation;
       deleteBaselineButton.disabled = monitoring || busyAutomation || !status.baseline_exists;
 
       startButton.textContent = scanning ? "Scanning..." : (startPending ? "Command Sent..." : "Start Scan");
@@ -951,6 +956,30 @@
       }
     }
 
+    function openBaselineImportPicker() {
+      importBaselineFileInput.click();
+    }
+
+    async function importBaselineFile(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) {
+        return;
+      }
+
+      try {
+        const bundle = JSON.parse(await file.text());
+        await sendJson("/api/baseline/import", "POST", {
+          bundle,
+          source_name: file.name,
+          source_view: "baseline",
+        });
+      } catch (error) {
+        eventLog.textContent = `Import baseline failed: ${error.message}`;
+      } finally {
+        importBaselineFileInput.value = "";
+      }
+    }
+
     startButton.addEventListener("click", startScan);
     saveBaselineButton.addEventListener("click", saveBaseline);
     startMonitoringButton.addEventListener("click", startMonitoring);
@@ -959,6 +988,8 @@
     hardStopButton.addEventListener("click", () => sendSimpleCommand("/api/robot/hard-stop", "Hard stop"));
     releaseButton.addEventListener("click", () => sendSimpleCommand("/api/robot/release-motors", "Release motors"));
     zeroButton.addEventListener("click", () => sendSimpleCommand("/api/robot/zero-turret", "Zero turret"));
+    importBaselineButton.addEventListener("click", openBaselineImportPicker);
+    importBaselineFileInput.addEventListener("change", importBaselineFile);
     deleteBaselineButton.addEventListener("click", () => sendSimpleCommand("/api/baseline", "Delete baseline", "DELETE"));
 
     renderLivePlots([], "raw", requestedPlotMode, false);

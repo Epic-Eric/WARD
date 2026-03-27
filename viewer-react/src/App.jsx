@@ -366,6 +366,7 @@ export default function App() {
   const [importedBundle, setImportedBundle] = useState(null);
   const [importMessage, setImportMessage] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [installingBaseline, setInstallingBaseline] = useState(false);
   const effectiveMode = baselineHoldActive ? "baseline" : requestedMode;
   const livePayload = useLivePoints(effectiveMode, residualTolerance);
   const status = importedBundle?.status ?? liveStatus;
@@ -515,6 +516,35 @@ export default function App() {
     setImportMessage("Returned to live server data.");
   }
 
+  async function installImportedBaseline() {
+    if (!importedBundle) {
+      setImportMessage("Import a bundle first.");
+      return;
+    }
+
+    setInstallingBaseline(true);
+    try {
+      const response = await fetch("/api/baseline/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bundle: importedBundle,
+          source_name: importedBundle.imported_name,
+          source_view: importedBundle.views.baseline ? "baseline" : "raw",
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "Import baseline failed.");
+      }
+      setImportMessage(`Installed baseline on server from ${importedBundle.imported_name}`);
+    } catch (error) {
+      setImportMessage(`Install baseline failed: ${error.message}`);
+    } finally {
+      setInstallingBaseline(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <section className="hero-card">
@@ -563,6 +593,13 @@ export default function App() {
             </button>
             <button type="button" onClick={handleImportClick}>
               Import Bundle
+            </button>
+            <button
+              type="button"
+              onClick={installImportedBaseline}
+              disabled={!importedBundle || installingBaseline}
+            >
+              {installingBaseline ? "Installing..." : "Use As Server Baseline"}
             </button>
             <button type="button" onClick={returnToLive} disabled={!importedBundle}>
               Return Live
