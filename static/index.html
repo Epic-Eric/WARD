@@ -15,6 +15,7 @@
       --accent-strong: #085d59;
       --border: #d8cdbf;
       --danger: #b0493a;
+      --warning: #b9781f;
     }
 
     * {
@@ -35,7 +36,7 @@
     }
 
     main {
-      width: min(900px, 100%);
+      width: min(1180px, 100%);
       display: grid;
       gap: 20px;
     }
@@ -51,26 +52,132 @@
 
     .hero {
       padding: 28px;
+      display: grid;
+      gap: 18px;
     }
 
     h1,
     h2 {
-      margin: 0 0 8px;
+      margin: 0;
       font-weight: 700;
       letter-spacing: 0.02em;
     }
 
+    h2 {
+      margin-bottom: 12px;
+    }
+
     p {
-      margin: 0;
+      margin: 8px 0 0;
       color: var(--muted);
       line-height: 1.5;
     }
 
-    .controls {
+    .hero-top {
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .status-cluster {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(11, 122, 117, 0.12);
+      color: var(--accent-strong);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .status-pill.offline {
+      background: rgba(176, 73, 58, 0.12);
+      color: var(--danger);
+    }
+
+    .status-pill.online {
+      background: rgba(11, 122, 117, 0.12);
+      color: var(--accent-strong);
+    }
+
+    .status-pill.scanning {
+      background: rgba(185, 120, 31, 0.16);
+      color: #845100;
+    }
+
+    .status-pill.recovering {
+      background: rgba(42, 61, 69, 0.14);
+      color: #2a3d45;
+    }
+
+    .status-pill.stale {
+      background: rgba(176, 73, 58, 0.12);
+      color: var(--danger);
+    }
+
+    .alert-banner {
+      display: none;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(176, 73, 58, 0.12);
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .alert-banner.visible {
+      display: flex;
+    }
+
+    .alert-banner .detail {
+      font-weight: 500;
+      color: var(--ink);
+      text-align: right;
+      word-break: break-word;
+    }
+
+    .toolbar {
+      display: grid;
+      gap: 12px;
+    }
+
+    .toolbar-row {
       display: flex;
       gap: 12px;
-      margin-top: 24px;
       flex-wrap: wrap;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      min-width: 150px;
+    }
+
+    .field label {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--muted);
+    }
+
+    .field input {
+      border: 1px solid rgba(216, 205, 191, 0.9);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font: inherit;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--ink);
     }
 
     button {
@@ -92,33 +199,38 @@
       opacity: 0.55;
     }
 
-    #start-scan {
+    .primary {
       background: var(--accent);
       color: white;
     }
 
-    #start-scan:hover:not(:disabled) {
+    .primary:hover:not(:disabled) {
       background: var(--accent-strong);
     }
 
-    #stop-scan {
+    .secondary {
       background: #d7c9b3;
       color: var(--ink);
     }
 
-    #hard-stop {
+    .warning {
+      background: rgba(185, 120, 31, 0.16);
+      color: #845100;
+    }
+
+    .danger {
       background: var(--danger);
       color: white;
     }
 
-    #release-motors {
+    .steel {
       background: #2a3d45;
       color: white;
     }
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 20px;
     }
 
@@ -154,23 +266,6 @@
       word-break: break-word;
     }
 
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 14px;
-      border-radius: 999px;
-      background: rgba(11, 122, 117, 0.12);
-      color: var(--accent-strong);
-      font-weight: 700;
-      margin-top: 18px;
-    }
-
-    .status-pill.offline {
-      background: rgba(176, 73, 58, 0.12);
-      color: var(--danger);
-    }
-
     .log {
       font-family: "SFMono-Regular", "Menlo", monospace;
       font-size: 0.95rem;
@@ -182,11 +277,82 @@
       min-height: 84px;
     }
 
+    .plot-header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .mode-pill {
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-weight: 700;
+      background: rgba(11, 122, 117, 0.12);
+      color: var(--accent-strong);
+    }
+
+    .mode-pill.residual {
+      background: rgba(176, 73, 58, 0.12);
+      color: var(--danger);
+    }
+
+    .mode-pill.baseline {
+      background: rgba(42, 61, 69, 0.14);
+      color: #2a3d45;
+    }
+
+    .plot-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .mode-toggle {
+      display: inline-flex;
+      gap: 6px;
+      padding: 4px;
+      border-radius: 999px;
+      background: rgba(216, 205, 191, 0.42);
+    }
+
+    .mode-toggle button {
+      padding: 8px 14px;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .mode-toggle button.active {
+      background: rgba(255, 250, 242, 0.96);
+      color: var(--ink);
+      box-shadow: 0 4px 12px rgba(52, 41, 24, 0.08);
+    }
+
+    .inline-field {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .inline-field input {
+      width: 88px;
+      border: 1px solid rgba(216, 205, 191, 0.9);
+      border-radius: 12px;
+      padding: 8px 10px;
+      font: inherit;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--ink);
+    }
+
     .plot-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 18px;
-      margin-top: 16px;
     }
 
     .plot-box {
@@ -208,19 +374,55 @@
       background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 231, 218, 0.85));
       border: 1px solid rgba(216, 205, 191, 0.85);
     }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 20px 12px;
+      }
+
+      .hero-top {
+        flex-direction: column;
+      }
+    }
   </style>
 </head>
 <body>
   <main>
     <section class="hero">
-      <h1>WARD Scanner Control</h1>
-      <p>Use this page to send commands to the robot and monitor the point-cloud capture session.</p>
-      <div id="connection-pill" class="status-pill offline">Robot disconnected</div>
-      <div class="controls">
-        <button id="start-scan">Start Scan</button>
-        <button id="stop-scan">Stop</button>
-        <button id="hard-stop">Hard Stop</button>
-        <button id="release-motors">Release Motors</button>
+      <div class="hero-top">
+        <div>
+          <h1>WARD Scanner Control</h1>
+          <p>Live control page for raw scans, saved baselines, and residual monitoring.</p>
+        </div>
+        <div class="status-cluster">
+          <div id="connection-pill" class="status-pill offline">Robot link offline</div>
+          <div id="robot-mode-pill" class="status-pill offline">Robot disconnected</div>
+        </div>
+      </div>
+
+      <div id="sensor-timeout-banner" class="alert-banner">
+        <span>Sensor timeout active</span>
+        <span id="sensor-timeout-banner-detail" class="detail">-</span>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-row">
+          <div class="field">
+            <label for="scan-degrees">Sweep Degrees</label>
+            <input id="scan-degrees" type="number" min="1" max="360" step="1" value="20">
+          </div>
+          <button id="start-scan" class="primary">Start Scan</button>
+          <button id="save-baseline" class="secondary">Save Baseline</button>
+          <button id="start-monitoring" class="warning">Start Monitoring</button>
+        </div>
+        <div class="toolbar-row">
+          <button id="stop-scan" class="secondary">Stop</button>
+          <button id="stop-monitoring" class="secondary">Stop Monitoring</button>
+          <button id="hard-stop" class="danger">Hard Stop</button>
+          <button id="release-motors" class="steel">Release Motors</button>
+          <button id="zero-turret" class="steel">Zero Turret</button>
+          <button id="delete-baseline" class="danger">Delete Baseline</button>
+        </div>
       </div>
     </section>
 
@@ -229,18 +431,22 @@
         <h2>Robot</h2>
         <div class="metric">
           <div><span class="label">Address</span><span id="robot-address" class="value">-</span></div>
+          <div><span class="label">Connection</span><span id="robot-connection-state" class="value">-</span></div>
           <div><span class="label">State</span><span id="robot-state" class="value">-</span></div>
+          <div><span class="label">Last seen</span><span id="robot-last-seen" class="value">-</span></div>
           <div><span class="label">Yaw</span><span id="robot-yaw" class="value">-</span></div>
           <div><span class="label">Pitch</span><span id="robot-pitch" class="value">-</span></div>
           <div><span class="label">Sensor status</span><span id="robot-sensor-status" class="value">-</span></div>
           <div><span class="label">Protocol</span><span id="robot-protocol" class="value">-</span></div>
           <div><span class="label">Last command</span><span id="last-command" class="value">-</span></div>
+          <div><span class="label">Command status</span><span id="last-command-status" class="value">-</span></div>
         </div>
       </article>
 
       <article class="panel">
         <h2>Capture</h2>
         <div class="metric">
+          <div><span class="label">Configured sweep</span><span id="configured-scan-degrees" class="value">-</span></div>
           <div><span class="label">Current frame</span><span id="current-frame" class="value">-</span></div>
           <div><span class="label">Frames</span><span id="frames" class="value">0</span></div>
           <div><span class="label">Points</span><span id="points" class="value">0</span></div>
@@ -248,6 +454,21 @@
           <div><span class="label">Sensor error</span><span id="sensor-error" class="value">-</span></div>
           <div><span class="label">Current CSV</span><span id="current-capture" class="value">-</span></div>
           <div><span class="label">Last CSV</span><span id="last-capture" class="value">-</span></div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Automation</h2>
+        <div class="metric">
+          <div><span class="label">Pending op</span><span id="pending-operation" class="value">-</span></div>
+          <div><span class="label">Monitoring</span><span id="monitoring-active" class="value">No</span></div>
+          <div><span class="label">Next monitor</span><span id="next-monitor-scan" class="value">-</span></div>
+          <div><span class="label">Baseline exists</span><span id="baseline-exists" class="value">No</span></div>
+          <div><span class="label">Baseline degrees</span><span id="baseline-degrees" class="value">-</span></div>
+          <div><span class="label">Baseline path</span><span id="baseline-path" class="value">-</span></div>
+          <div><span class="label">Baseline source</span><span id="baseline-source" class="value">-</span></div>
+          <div><span class="label">Residual CSV</span><span id="last-residual" class="value">-</span></div>
+          <div><span class="label">Residual points</span><span id="last-residual-points" class="value">-</span></div>
         </div>
       </article>
 
@@ -268,7 +489,21 @@
     </section>
 
     <section class="panel">
-      <h2>Live Plot</h2>
+      <div class="plot-header">
+        <h2>Live Plot</h2>
+        <div class="plot-controls">
+          <div class="mode-toggle">
+            <button id="plot-raw" type="button" class="active">Raw</button>
+            <button id="plot-residual" type="button">Residual</button>
+            <button id="plot-baseline" type="button">Baseline</button>
+          </div>
+          <label class="inline-field" for="residual-tolerance">
+            Monitoring Tolerance
+            <input id="residual-tolerance" type="number" min="0" step="5" value="25">
+          </label>
+          <div id="plot-mode" class="mode-pill">raw</div>
+        </div>
+      </div>
       <div class="plot-grid">
         <div class="plot-box">
           <h3>Top View (X/Y)</h3>
@@ -284,30 +519,138 @@
 
   <script>
     const startButton = document.getElementById("start-scan");
+    const saveBaselineButton = document.getElementById("save-baseline");
+    const startMonitoringButton = document.getElementById("start-monitoring");
     const stopButton = document.getElementById("stop-scan");
+    const stopMonitoringButton = document.getElementById("stop-monitoring");
     const hardStopButton = document.getElementById("hard-stop");
     const releaseButton = document.getElementById("release-motors");
+    const zeroButton = document.getElementById("zero-turret");
+    const deleteBaselineButton = document.getElementById("delete-baseline");
+    const scanDegreesInput = document.getElementById("scan-degrees");
     const eventLog = document.getElementById("event-log");
     const connectionPill = document.getElementById("connection-pill");
+    const robotModePill = document.getElementById("robot-mode-pill");
+    const sensorTimeoutBanner = document.getElementById("sensor-timeout-banner");
+    const sensorTimeoutBannerDetail = document.getElementById("sensor-timeout-banner-detail");
+    const plotMode = document.getElementById("plot-mode");
+    const plotRawButton = document.getElementById("plot-raw");
+    const plotResidualButton = document.getElementById("plot-residual");
+    const plotBaselineButton = document.getElementById("plot-baseline");
+    const residualToleranceInput = document.getElementById("residual-tolerance");
     const xyCanvas = document.getElementById("xy-plot");
     const xzCanvas = document.getElementById("xz-plot");
     const xyContext = xyCanvas.getContext("2d");
     const xzContext = xzCanvas.getContext("2d");
     let startPending = false;
-    let latestLivePoints = [];
+    let requestedPlotMode = "raw";
+    let baselineHoldActive = false;
+    let baselineAvailable = false;
 
     function setText(id, value) {
       document.getElementById(id).textContent = value ?? "-";
     }
 
+    function formatDegrees(value) {
+      return value != null ? `${Number(value).toFixed(2)} deg` : "-";
+    }
+
+    function formatRobotConnectionState(value) {
+      switch (value) {
+        case "idle":
+          return "Connected · Idle";
+        case "scanning":
+          return "Connected · Scanning";
+        case "recovering_sensor":
+          return "Connected · Recovering Sensor";
+        case "stale":
+          return "Link stale";
+        case "disconnected":
+          return "Disconnected";
+        default:
+          return value ?? "-";
+      }
+    }
+
+    function setPillState(pill, state, text) {
+      pill.textContent = text;
+      pill.className = "status-pill";
+      if (state === "scanning") {
+        pill.classList.add("scanning");
+      } else if (state === "recovering_sensor") {
+        pill.classList.add("recovering");
+      } else if (state === "idle") {
+        pill.classList.add("online");
+      } else if (state === "stale") {
+        pill.classList.add("stale");
+      } else {
+        pill.classList.add("offline");
+      }
+    }
+
+    function formatDateTime(value) {
+      if (!value) {
+        return "-";
+      }
+
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+      return date.toLocaleString();
+    }
+
+    function readScanDegrees() {
+      const scanDegrees = Number(scanDegreesInput.value);
+      if (!Number.isFinite(scanDegrees) || scanDegrees <= 0 || scanDegrees > 360) {
+        throw new Error("Sweep degrees must be between 1 and 360.");
+      }
+      return scanDegrees;
+    }
+
+    function readResidualTolerance() {
+      const tolerance = Number(residualToleranceInput.value);
+      if (!Number.isFinite(tolerance) || tolerance < 0) {
+        throw new Error("Residual tolerance must be 0 or greater.");
+      }
+      return tolerance;
+    }
+
+    function syncScanDegreesInput(status) {
+      if (document.activeElement === scanDegreesInput) {
+        return;
+      }
+      if (status.configured_scan_degrees != null) {
+        scanDegreesInput.value = String(Number(status.configured_scan_degrees));
+      }
+    }
+
+    function syncResidualToleranceInput(status) {
+      if (document.activeElement === residualToleranceInput) {
+        return;
+      }
+      if (status.residual_tolerance_mm != null) {
+        residualToleranceInput.value = String(Number(status.residual_tolerance_mm));
+      }
+    }
+
     function renderStatus(status) {
+      syncScanDegreesInput(status);
+      syncResidualToleranceInput(status);
+      baselineAvailable = Boolean(status.baseline_exists);
+
       setText("robot-address", status.robot_address);
+      setText("robot-connection-state", formatRobotConnectionState(status.robot_connection_state));
       setText("robot-state", status.robot_state);
-      setText("robot-yaw", status.current_yaw_deg != null ? `${status.current_yaw_deg.toFixed(2)} deg` : "-");
-      setText("robot-pitch", status.current_pitch_deg != null ? `${status.current_pitch_deg.toFixed(2)} deg` : "-");
+      setText("robot-last-seen", formatDateTime(status.last_robot_seen_at));
+      setText("robot-yaw", formatDegrees(status.current_yaw_deg));
+      setText("robot-pitch", formatDegrees(status.current_pitch_deg));
       setText("robot-sensor-status", status.sensor_status);
       setText("robot-protocol", status.robot_protocol);
       setText("last-command", status.last_command);
+      setText("last-command-status", status.last_command_status);
+
+      setText("configured-scan-degrees", formatDegrees(status.configured_scan_degrees));
       setText("current-frame", status.current_frame);
       setText("frames", status.frames);
       setText("points", status.points);
@@ -315,26 +658,61 @@
       setText("sensor-error", status.last_sensor_error);
       setText("current-capture", status.current_capture);
       setText("last-capture", status.last_capture);
+
+      setText("pending-operation", status.pending_operation);
+      setText("monitoring-active", status.monitoring_active ? "Yes" : "No");
+      setText("next-monitor-scan", formatDateTime(status.next_monitor_scan_at));
+      setText("baseline-exists", status.baseline_exists ? "Yes" : "No");
+      setText("baseline-degrees", formatDegrees(status.baseline_degrees));
+      setText("baseline-path", status.baseline_path);
+      setText("baseline-source", status.baseline_source_capture);
+      setText("last-residual", status.last_residual_path);
+      setText("last-residual-points", status.last_residual_points);
+
       setText("lan-ip", status.detected_lan_ip);
       setText("hostname", status.detected_hostname);
       setText("tcp-port", status.robot_tcp_port);
       setText("http-port", status.http_port);
 
-      eventLog.textContent = [status.last_event, status.last_error].filter(Boolean).join("\n") || "No recent events.";
+      const timeoutDetail = status.last_sensor_error || status.sensor_status || "Sensor timeout";
+      sensorTimeoutBanner.classList.toggle("visible", Boolean(status.sensor_timeout));
+      sensorTimeoutBannerDetail.textContent = timeoutDetail;
+
+      const logLines = [
+        status.automation_event,
+        status.last_residual_summary,
+        status.last_event,
+        status.automation_error,
+        status.last_error,
+      ].filter(Boolean);
+      eventLog.textContent = logLines.join("\n") || "No recent events.";
 
       const connected = Boolean(status.robot_connected);
       const scanning = Boolean(status.scan_in_progress);
+      const monitoring = Boolean(status.monitoring_active);
+      const busyAutomation = Boolean(status.pending_operation);
+
       if (scanning || !connected || status.last_error) {
         startPending = false;
       }
-      connectionPill.textContent = connected ? `Robot ${status.robot_state}` : "Robot disconnected";
-      connectionPill.classList.toggle("offline", !connected);
 
-      startButton.disabled = !connected || scanning || startPending;
-      stopButton.disabled = !connected || !scanning;
+      const linkState = connected ? (status.robot_connection_state === "stale" ? "stale" : "idle") : "disconnected";
+      setPillState(connectionPill, linkState, connected ? "Robot link online" : "Robot link offline");
+      setPillState(robotModePill, status.robot_connection_state, formatRobotConnectionState(status.robot_connection_state));
+
+      startButton.disabled = !connected || scanning || monitoring || busyAutomation || startPending;
+      saveBaselineButton.disabled = !connected || scanning || monitoring || busyAutomation;
+      startMonitoringButton.disabled = !connected || scanning || monitoring || busyAutomation || !status.baseline_exists;
+      stopButton.disabled = !connected || (!scanning && !monitoring);
+      stopMonitoringButton.disabled = !monitoring;
       hardStopButton.disabled = !connected || !scanning;
       releaseButton.disabled = !connected;
+      zeroButton.disabled = !connected || scanning || monitoring || busyAutomation;
+      deleteBaselineButton.disabled = monitoring || busyAutomation || !status.baseline_exists;
+
       startButton.textContent = scanning ? "Scanning..." : (startPending ? "Command Sent..." : "Start Scan");
+      saveBaselineButton.textContent = busyAutomation ? "Saving..." : "Save Baseline";
+      startMonitoringButton.textContent = monitoring ? "Monitoring..." : "Start Monitoring";
     }
 
     function drawAxes(ctx, width, height, titleX, titleY) {
@@ -353,17 +731,22 @@
       ctx.fillText(titleY, width / 2 + 8, 24);
     }
 
+    function visiblePoints(points) {
+      return points.filter((point) => !(point.length > 4 && Number(point[4]) > 0.5));
+    }
+
     function computeBounds(points, yIndex) {
       let minX = -100;
       let maxX = 100;
       let minY = -100;
       let maxY = 100;
+      const drawablePoints = visiblePoints(points);
 
-      if (points.length > 0) {
-        minX = Math.min(...points.map((point) => point[0]));
-        maxX = Math.max(...points.map((point) => point[0]));
-        minY = Math.min(...points.map((point) => point[yIndex]));
-        maxY = Math.max(...points.map((point) => point[yIndex]));
+      if (drawablePoints.length > 0) {
+        minX = Math.min(...drawablePoints.map((point) => point[0]));
+        maxX = Math.max(...drawablePoints.map((point) => point[0]));
+        minY = Math.min(...drawablePoints.map((point) => point[yIndex]));
+        maxY = Math.max(...drawablePoints.map((point) => point[yIndex]));
       }
 
       const padX = Math.max((maxX - minX) * 0.1, 50);
@@ -384,7 +767,18 @@
       return outMin + t * (outMax - outMin);
     }
 
-    function drawPointSet(ctx, canvas, points, yIndex, xLabel, yLabel) {
+    function pointStyle(point, renderMode) {
+      if (renderMode === "residual") {
+        const occlusion = Number(point[5] ?? point[3] ?? 0);
+        const magnitude = Math.min(1, Math.abs(occlusion) / 250);
+        return `rgba(201, 84, 46, ${0.28 + magnitude * 0.72})`;
+      }
+
+      const intensity = Math.min(1, Math.max(0.15, point[3] / 1200));
+      return `rgba(11, 122, 117, ${intensity})`;
+    }
+
+    function drawPointSet(ctx, canvas, points, yIndex, xLabel, yLabel, renderMode) {
       const { width, height } = canvas;
       ctx.clearRect(0, 0, width, height);
 
@@ -405,22 +799,41 @@
       ctx.arc(originX, originY, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      for (const point of points) {
+      const drawablePoints = visiblePoints(points);
+      for (const point of drawablePoints) {
         const x = project(point[0], bounds.minX, bounds.maxX, left, right);
         const y = project(point[yIndex], bounds.minY, bounds.maxY, bottom, top);
-        const intensity = Math.min(1, Math.max(0.15, point[3] / 1200));
-        ctx.fillStyle = `rgba(11, 122, 117, ${intensity})`;
+        ctx.fillStyle = pointStyle(point, renderMode);
         ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
       }
 
       ctx.fillStyle = "#6d777c";
       ctx.font = "11px Menlo, monospace";
-      ctx.fillText(`${points.length} points`, left, height - 8);
+      ctx.fillText(`${drawablePoints.length} points`, left, height - 8);
     }
 
-    function renderLivePlots(points) {
-      drawPointSet(xyContext, xyCanvas, points, 1, "X", "Y");
-      drawPointSet(xzContext, xzCanvas, points, 2, "X", "Z");
+    function effectivePlotMode() {
+      if (baselineHoldActive && baselineAvailable) {
+        return "baseline";
+      }
+      return requestedPlotMode;
+    }
+
+    function setPlotModeButtons(activeMode, residualAvailable, allowBaseline) {
+      plotRawButton.classList.toggle("active", activeMode === "raw");
+      plotResidualButton.classList.toggle("active", activeMode === "residual");
+      plotBaselineButton.classList.toggle("active", activeMode === "baseline");
+      plotResidualButton.disabled = !residualAvailable && activeMode !== "residual";
+      plotBaselineButton.disabled = !allowBaseline;
+    }
+
+    function renderLivePlots(points, renderMode, requestedMode = "raw", residualAvailable = false) {
+      plotMode.textContent = renderMode;
+      plotMode.classList.toggle("residual", renderMode === "residual");
+      plotMode.classList.toggle("baseline", renderMode === "baseline");
+      setPlotModeButtons(renderMode, residualAvailable, baselineAvailable);
+      drawPointSet(xyContext, xyCanvas, points, 1, "X", "Y", renderMode);
+      drawPointSet(xzContext, xzCanvas, points, 2, "X", "Z", renderMode);
     }
 
     async function refreshStatus() {
@@ -430,57 +843,125 @@
         renderStatus(status);
       } catch (error) {
         eventLog.textContent = `Status request failed: ${error}`;
-        connectionPill.textContent = "Server unreachable";
-        connectionPill.classList.add("offline");
+        setPillState(connectionPill, "disconnected", "Server unreachable");
+        setPillState(robotModePill, "disconnected", "Robot disconnected");
         startButton.disabled = true;
       }
     }
 
     async function refreshLivePoints() {
       try {
-        const response = await fetch("/api/live-points");
+        const tolerance = readResidualTolerance();
+        const response = await fetch(
+          `/api/live-points?mode=${encodeURIComponent(effectivePlotMode())}&tolerance_mm=${encodeURIComponent(tolerance)}`
+        );
         const payload = await response.json();
-        latestLivePoints = payload.points || [];
-        renderLivePlots(latestLivePoints);
+        baselineAvailable = Boolean(payload.baseline_available);
+        renderLivePlots(
+          payload.points || [],
+          payload.render_mode || "raw",
+          payload.requested_mode || requestedPlotMode,
+          Boolean(payload.baseline_available)
+        );
       } catch (error) {
         eventLog.textContent = `Live plot request failed: ${error}`;
       }
     }
 
+    plotRawButton.addEventListener("click", () => {
+      requestedPlotMode = "raw";
+      refreshLivePoints();
+    });
+
+    plotResidualButton.addEventListener("click", () => {
+      requestedPlotMode = "residual";
+      refreshLivePoints();
+    });
+
+    function releaseBaselineHold() {
+      if (!baselineHoldActive) {
+        return;
+      }
+      baselineHoldActive = false;
+      refreshLivePoints();
+    }
+
+    plotBaselineButton.addEventListener("pointerdown", (event) => {
+      if (!baselineAvailable) {
+        return;
+      }
+      event.preventDefault();
+      baselineHoldActive = true;
+      refreshLivePoints();
+    });
+    plotBaselineButton.addEventListener("pointerup", releaseBaselineHold);
+    plotBaselineButton.addEventListener("pointerleave", releaseBaselineHold);
+    plotBaselineButton.addEventListener("pointercancel", releaseBaselineHold);
+    window.addEventListener("pointerup", releaseBaselineHold);
+
+    async function sendJson(endpoint, method = "POST", payload = null) {
+      const response = await fetch(endpoint, {
+        method,
+        headers: payload ? { "Content-Type": "application/json" } : undefined,
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Request failed.");
+      }
+      renderStatus(data);
+      return data;
+    }
+
     async function startScan() {
-      startPending = true;
-      startButton.disabled = true;
       try {
-        const response = await fetch("/api/robot/start-scan", { method: "POST" });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.detail || "Failed to start scan.");
-        }
-        renderStatus(payload);
+        const scanDegrees = readScanDegrees();
+        startPending = true;
+        startButton.disabled = true;
+        await sendJson("/api/robot/start-scan", "POST", { scan_degrees: scanDegrees });
       } catch (error) {
         startPending = false;
         eventLog.textContent = `Start scan failed: ${error.message}`;
       }
     }
 
-    async function sendSimpleCommand(endpoint, label) {
+    async function saveBaseline() {
       try {
-        const response = await fetch(endpoint, { method: "POST" });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.detail || `Failed to send ${label}.`);
-        }
-        renderStatus(payload);
+        const scanDegrees = readScanDegrees();
+        await sendJson("/api/baseline/save", "POST", { scan_degrees: scanDegrees });
+      } catch (error) {
+        eventLog.textContent = `Save baseline failed: ${error.message}`;
+      }
+    }
+
+    async function startMonitoring() {
+      try {
+        const scanDegrees = readScanDegrees();
+        await sendJson("/api/monitoring/start", "POST", { scan_degrees: scanDegrees });
+      } catch (error) {
+        eventLog.textContent = `Start monitoring failed: ${error.message}`;
+      }
+    }
+
+    async function sendSimpleCommand(endpoint, label, method = "POST") {
+      try {
+        await sendJson(endpoint, method);
       } catch (error) {
         eventLog.textContent = `${label} failed: ${error.message}`;
       }
     }
 
     startButton.addEventListener("click", startScan);
+    saveBaselineButton.addEventListener("click", saveBaseline);
+    startMonitoringButton.addEventListener("click", startMonitoring);
     stopButton.addEventListener("click", () => sendSimpleCommand("/api/robot/stop-scan", "Stop"));
-    hardStopButton.addEventListener("click", () => sendSimpleCommand("/api/robot/hard-stop", "Hard Stop"));
-    releaseButton.addEventListener("click", () => sendSimpleCommand("/api/robot/release-motors", "Release Motors"));
-    renderLivePlots([]);
+    stopMonitoringButton.addEventListener("click", () => sendSimpleCommand("/api/monitoring/stop", "Stop monitoring"));
+    hardStopButton.addEventListener("click", () => sendSimpleCommand("/api/robot/hard-stop", "Hard stop"));
+    releaseButton.addEventListener("click", () => sendSimpleCommand("/api/robot/release-motors", "Release motors"));
+    zeroButton.addEventListener("click", () => sendSimpleCommand("/api/robot/zero-turret", "Zero turret"));
+    deleteBaselineButton.addEventListener("click", () => sendSimpleCommand("/api/baseline", "Delete baseline", "DELETE"));
+
+    renderLivePlots([], "raw", requestedPlotMode, false);
     refreshStatus();
     refreshLivePoints();
     setInterval(refreshStatus, 1000);

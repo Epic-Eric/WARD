@@ -20,6 +20,11 @@ constexpr unsigned long kServerRetryDelayMs = 1000;
 constexpr unsigned long kSampleSettleDelayMs = 80;
 constexpr unsigned long kSensorWaitTimeoutMs = 120;
 constexpr unsigned long kIdlePollDelayMs = 20;
+constexpr unsigned long kHeartbeatIntervalMs = 1000;
+constexpr unsigned long kSensorRecoverySettleDelayMs = 60;
+constexpr uint8_t kSensorRecoveryAttempts = 4;
+constexpr uint8_t kSensorRecoveryProbeAttempts = 2;
+constexpr unsigned long kSensorRecoveryBackoffBaseMs = 75;
 
 constexpr int kSdaPin = 8;
 constexpr int kSclPin = 9;
@@ -34,7 +39,7 @@ constexpr int kYawPin3 = 3;
 constexpr int kYawPin4 = 2;
 
 constexpr int kStepsPerRevolution = 200;
-constexpr float kYawGearRatio = 12.0f;
+constexpr float kYawGearRatio = 6.0f;
 constexpr float kPitchGearRatio = 2.0f;
 constexpr float kYawAnglePerStepDeg =
     360.0f / static_cast<float>(kStepsPerRevolution) / kYawGearRatio;
@@ -50,7 +55,8 @@ constexpr int kPitchMotorSpeedRpm = 20;
 constexpr float kPitchSweepStartDeg = -30.0f;
 constexpr float kPitchSweepEndDeg = 0.0f;
 constexpr float kYawSweepStartDeg = 0.0f;
-constexpr float kYawSweepEndDeg = 20.0f;
+constexpr float kDefaultScanDegrees = 20.0f;
+constexpr float kMaxScanDegrees = 360.0f;
 constexpr float kYawSweepStepDeg = 1.0f;
 
 constexpr size_t kCommandBufferSize = 48;
@@ -62,6 +68,7 @@ enum class RobotCommand {
     StopScan,
     HardStop,
     ReleaseMotors,
+    ZeroTurret,
 };
 
 enum class ScanOutcome {
@@ -69,6 +76,7 @@ enum class ScanOutcome {
     Stopped,
     HardStopped,
     HardStoppedReleased,
+    SensorRecoveryFailed,
 };
 
 struct Point3D {
@@ -115,6 +123,10 @@ public:
 
     float currentAngleDeg() const { return currentAngleDeg_; }
 
+    void setCurrentAngleDeg(float angleDeg) { currentAngleDeg_ = angleDeg; }
+
+    void zero() { currentAngleDeg_ = 0.0f; }
+
     void moveTo(float targetAngleDeg) {
         const float deltaDeg = targetAngleDeg - currentAngleDeg_;
         const int steps = lroundf(deltaDeg / anglePerStepDeg_);
@@ -150,20 +162,39 @@ class DistanceSensor {
 public:
     explicit DistanceSensor(MbedI2C& bus) : bus_(bus) {}
 
-    bool begin() {
-        sensor_.setBus(&bus_);
-        sensor_.setTimeout(500);
+    bool begin() { return initializeSensor(true); }
 
-        if (!sensor_.init()) {
-            Serial.println("ERROR: Failed to detect VL53L1X.");
-            Serial.println("Check wiring and power.");
-            return false;
+    bool reconnect(const char*& errorText) {
+        for (uint8_t attempt = 0; attempt < Config::kSensorRecoveryAttempts; ++attempt) {
+            const unsigned long backoffMs =
+                Config::kSensorRecoveryBackoffBaseMs << attempt;
+            stopContinuousQuietly();
+            delay(Config::kSensorRecoverySettleDelayMs);
+            if (!initializeSensor(false)) {
+                errorText = "SENSOR_INIT_FAILED";
+                delay(backoffMs);
+                continue;
+            }
+
+            for (uint8_t probe = 0; probe < Config::kSensorRecoveryProbeAttempts; ++probe) {
+                uint16_t ignoredDistance = 0;
+                const char* probeError = nullptr;
+                if (readDistanceMm(ignoredDistance, probeError)) {
+                    errorText = nullptr;
+                    return true;
+                }
+
+                errorText = probeError;
+                delay(Config::kSensorRecoverySettleDelayMs);
+            }
+
+            delay(backoffMs);
         }
 
-        sensor_.setDistanceMode(VL53L1X::Long);
-        sensor_.setMeasurementTimingBudget(50000);
-        sensor_.startContinuous(50);
-        return true;
+        if (errorText == nullptr) {
+            errorText = "SENSOR_RECOVERY_FAILED";
+        }
+        return false;
     }
 
     bool readDistanceMm(uint16_t& distanceMm, const char*& errorText) {
@@ -187,6 +218,30 @@ public:
     }
 
 private:
+    bool initializeSensor(bool logErrors) {
+        bus_.begin();
+        bus_.setClock(400000);
+        sensor_.setBus(&bus_);
+        sensor_.setTimeout(500);
+
+        if (!sensor_.init()) {
+            if (logErrors) {
+                Serial.println("ERROR: Failed to detect VL53L1X.");
+                Serial.println("Check wiring and power.");
+            }
+            return false;
+        }
+
+        sensor_.setDistanceMode(VL53L1X::Long);
+        sensor_.setMeasurementTimingBudget(50000);
+        sensor_.startContinuous(50);
+        return true;
+    }
+
+    void stopContinuousQuietly() {
+        sensor_.stopContinuous();
+    }
+
     VL53L1X sensor_;
     MbedI2C& bus_;
 };
@@ -201,6 +256,8 @@ public:
           serverFallbackIp_(serverFallbackIp),
           serverPort_(serverPort),
           lastServerConnectAttemptMs_(0),
+          lastHeartbeatSentMs_(0),
+          requestedScanDegrees_(Config::kDefaultScanDegrees),
           commandLength_(0) {
         commandBuffer_[0] = '\0';
     }
@@ -238,7 +295,23 @@ public:
 
                 if (strcmp(commandBuffer_, "START_SCAN") == 0) {
                     Serial.println("Received command START_SCAN");
+                    requestedScanDegrees_ = Config::kDefaultScanDegrees;
                     return RobotCommand::StartScan;
+                }
+
+                if (strncmp(commandBuffer_, "START_SCAN,", 11) == 0) {
+                    const float parsedDegrees = atof(commandBuffer_ + 11);
+                    if (parsedDegrees > 0.0f &&
+                        parsedDegrees <= Config::kMaxScanDegrees) {
+                        requestedScanDegrees_ = parsedDegrees;
+                        Serial.print("Received command START_SCAN with degrees=");
+                        Serial.println(requestedScanDegrees_, 2);
+                        return RobotCommand::StartScan;
+                    }
+
+                    Serial.print("Ignoring invalid START_SCAN degrees: ");
+                    Serial.println(commandBuffer_);
+                    continue;
                 }
 
                 if (strcmp(commandBuffer_, "STOP_SCAN") == 0) {
@@ -254,6 +327,11 @@ public:
                 if (strcmp(commandBuffer_, "RELEASE_MOTORS") == 0) {
                     Serial.println("Received command RELEASE_MOTORS");
                     return RobotCommand::ReleaseMotors;
+                }
+
+                if (strcmp(commandBuffer_, "ZERO_TURRET") == 0) {
+                    Serial.println("Received command ZERO_TURRET");
+                    return RobotCommand::ZeroTurret;
                 }
 
                 if (commandBuffer_[0] != '\0') {
@@ -273,6 +351,29 @@ public:
         }
 
         return RobotCommand::None;
+    }
+
+    float requestedScanDegrees() const { return requestedScanDegrees_; }
+
+    void sendHeartbeatIfDue(const char* state, float yawDeg, float pitchDeg) {
+        if (!ensureServerConnection()) {
+            return;
+        }
+
+        const unsigned long nowMs = millis();
+        if (nowMs - lastHeartbeatSentMs_ < Config::kHeartbeatIntervalMs) {
+            return;
+        }
+        lastHeartbeatSentMs_ = nowMs;
+
+        client_.print("HEARTBEAT,");
+        client_.print(nowMs);
+        client_.print(",");
+        client_.print(state);
+        client_.print(",");
+        client_.print(yawDeg, 2);
+        client_.print(",");
+        client_.println(pitchDeg, 2);
     }
 
     void sendState(const char* state) {
@@ -413,6 +514,32 @@ private:
             Serial.println(WiFi.SSID(i));
         }
 
+        // if the SSID is not in the scan results, exit and error message 
+        if (networkCount == 0) {
+            Serial.println("ERROR: No WiFi networks found. Check WiFi credentials and try again.");
+            while (true) {
+                delay(1000);
+            }
+        }
+
+        // if SSID not in
+        bool ssidFound = false;
+        for (int i = 0; i < networkCount; ++i) {
+            if (strcmp(WiFi.SSID(i), ssid_) == 0) {
+                ssidFound = true;
+                break;
+            }
+        }
+        if (!ssidFound) {
+            Serial.print("ERROR: WiFi SSID '");
+            Serial.print(ssid_);
+            Serial.println("' not found in scan results. Check WiFi credentials and try again.");
+            while (true) {
+                delay(1000);
+            }
+        }   
+
+
         while (WiFi.status() != WL_CONNECTED) {
             Serial.print("Connecting to WiFi SSID ");
             Serial.println(ssid_);
@@ -424,6 +551,11 @@ private:
 
             Serial.print("WiFi connection failed, status=");
             Serial.println(status);
+            if (status == 6) {  // WL_CONNECT_FAILED
+                Serial.println("Restart WiFi router and check credentials.");
+            } else if (status == WL_NO_SSID_AVAIL) {
+                Serial.println("Check WiFi SSID.");
+            }
             delay(Config::kWifiRetryDelayMs);
         }
 
@@ -435,6 +567,8 @@ private:
         client_.println("HELLO,NANO_RP2040_CONNECT,POINT_CLOUD_V3");
         sendState("IDLE");
         sendSensorStatus("READY");
+        sendPose(0.0f, Config::kPitchStartingAngleDeg);
+        lastHeartbeatSentMs_ = millis();
     }
 
     bool connectToServer() {
@@ -499,6 +633,8 @@ private:
     IPAddress serverFallbackIp_;
     uint16_t serverPort_;
     unsigned long lastServerConnectAttemptMs_;
+    unsigned long lastHeartbeatSentMs_;
+    float requestedScanDegrees_;
     WiFiClient client_;
     char commandBuffer_[Config::kCommandBufferSize];
     size_t commandLength_;
@@ -523,13 +659,14 @@ public:
         robotLink_.sendSensorStatus("READY");
     }
 
-    ScanOutcome runFrame() {
+    ScanOutcome runFrame(float yawSweepEndDeg) {
         const uint32_t frameId = nextFrameId_++;
         uint16_t pointIndex = 0;
         bool softStopRequested = false;
         bool hardStopRequested = false;
         bool releaseRequested = false;
-        bool sensorTimeoutSeen = false;
+        bool sensorRecoveryFailed = false;
+        const char* abortReason = nullptr;
 
         Serial.print("Starting frame ");
         Serial.println(frameId);
@@ -564,7 +701,7 @@ public:
         };
 
         for (float yawTarget = Config::kYawSweepStartDeg;
-             yawTarget <= Config::kYawSweepEndDeg + 0.001f;
+             yawTarget <= yawSweepEndDeg + 0.001f;
              yawTarget += Config::kYawSweepStepDeg) {
             applyCommand(robotLink_.pollCommand());
             if (hardStopRequested) {
@@ -588,17 +725,39 @@ public:
                 uint16_t distanceMm = 0;
                 const char* errorText = nullptr;
                 if (!distanceSensor_.readDistanceMm(distanceMm, errorText)) {
-                    robotLink_.sendSensorStatus(errorText);
-                    if (!sensorTimeoutSeen && strcmp(errorText, "SENSOR_TIMEOUT") == 0) {
-                        sensorTimeoutSeen = true;
+                    if (strcmp(errorText, "SENSOR_TIMEOUT") == 0) {
+                        robotLink_.sendSensorStatus("RECOVERING_SENSOR");
                         robotLink_.sendSensorTimeout(errorText);
+
+                        const char* recoveryError = nullptr;
+                        if (distanceSensor_.reconnect(recoveryError)) {
+                            robotLink_.sendSensorStatus("READY");
+                            Serial.println("Sensor recovered after timeout.");
+                        } else {
+                            robotLink_.sendSensorStatus("SENSOR_RECOVERY_FAILED");
+                            robotLink_.sendSensorTimeout(recoveryError != nullptr
+                                                             ? recoveryError
+                                                             : "SENSOR_RECOVERY_FAILED");
+                            Serial.print("Sensor recovery failed: ");
+                            Serial.println(recoveryError != nullptr ? recoveryError
+                                                                    : "unknown");
+                            sensorRecoveryFailed = true;
+                            hardStopRequested = true;
+                            abortReason = "SENSOR_RECOVERY_FAILED";
+                        }
+                    } else {
+                        robotLink_.sendSensorStatus(errorText);
                     }
+
                     Serial.print("Skipping point at yaw=");
                     Serial.print(yawAxis_.currentAngleDeg(), 2);
                     Serial.print(" pitch=");
                     Serial.print(pitchAxis_.currentAngleDeg(), 2);
                     Serial.print(" reason=");
                     Serial.println(errorText);
+                    if (sensorRecoveryFailed) {
+                        break;
+                    }
                     continue;
                 }
 
@@ -628,10 +787,16 @@ public:
 
         robotLink_.endFrame(frameId, pointIndex, networkEnabled);
         if (hardStopRequested) {
-            robotLink_.sendAbort(releaseRequested ? "RELEASE_MOTORS" : "HARD_STOP", frameId);
+            robotLink_.sendAbort(sensorRecoveryFailed
+                                     ? abortReason
+                                     : (releaseRequested ? "RELEASE_MOTORS" : "HARD_STOP"),
+                                 frameId);
             robotLink_.sendState("IDLE");
             robotLink_.sendPose(yawAxis_.currentAngleDeg(), pitchAxis_.currentAngleDeg());
             robotLink_.discardPendingInput();
+            if (sensorRecoveryFailed) {
+                return ScanOutcome::SensorRecoveryFailed;
+            }
             return releaseRequested ? ScanOutcome::HardStoppedReleased
                                     : ScanOutcome::HardStopped;
         }
@@ -680,6 +845,11 @@ void releaseAllMotors() {
     kYawAxis.release();
 }
 
+void zeroAllAxes() {
+    kPitchAxis.zero();
+    kYawAxis.zero();
+}
+
 void setup() {
     Serial.begin(Config::kSerialBaudRate);
     Serial.println("Point cloud scanner starting up... It might take a few seconds to initialize.");
@@ -707,8 +877,9 @@ void setup() {
 void loop() {
     const RobotCommand command = kRobotLink.pollCommand();
     if (command == RobotCommand::StartScan) {
-        const ScanOutcome outcome = kScanner.runFrame();
-        if (outcome == ScanOutcome::Completed || outcome == ScanOutcome::Stopped) {
+        const ScanOutcome outcome = kScanner.runFrame(kRobotLink.requestedScanDegrees());
+        if (outcome == ScanOutcome::Completed || outcome == ScanOutcome::Stopped ||
+            outcome == ScanOutcome::SensorRecoveryFailed) {
             resetToStartingPosition();
             kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
         }
@@ -717,6 +888,10 @@ void loop() {
             Serial.println("Scan complete. Waiting for next command.");
         } else if (outcome == ScanOutcome::Stopped) {
             Serial.println("Scan stopped. Waiting for next command.");
+        } else if (outcome == ScanOutcome::SensorRecoveryFailed) {
+            kRobotLink.sendState("IDLE");
+            kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
+            Serial.println("Sensor recovery failed. Returned to home position.");
         } else if (outcome == ScanOutcome::HardStoppedReleased) {
             releaseAllMotors();
             kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
@@ -730,9 +905,18 @@ void loop() {
         kRobotLink.sendState("MOTORS_RELEASED");
         kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
         Serial.println("Motors released while idle.");
+    } else if (command == RobotCommand::ZeroTurret) {
+        releaseAllMotors();
+        zeroAllAxes();
+        kRobotLink.sendState("ZEROED");
+        kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
+        Serial.println("Turret released and zeroed while idle.");
     } else if (command == RobotCommand::StopScan || command == RobotCommand::HardStop) {
         Serial.println("Robot is idle. Stop command ignored.");
     }
+
+    kRobotLink.sendHeartbeatIfDue("IDLE", kYawAxis.currentAngleDeg(),
+                                  kPitchAxis.currentAngleDeg());
 
     delay(Config::kIdlePollDelayMs);
 }
