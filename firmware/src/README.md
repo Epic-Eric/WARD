@@ -2,6 +2,12 @@
 
 This directory contains the robot firmware for the Arduino Nano RP2040 Connect.
 
+Expected workflow:
+
+- edit in VS Code
+- track changes in GitHub
+- build and upload with PlatformIO
+
 Main file:
 
 - `main.cpp`
@@ -14,6 +20,12 @@ Main file:
 - read the VL53L1X distance sensor
 - stream scan points and robot state back to the server
 - accept server commands such as `START_SCAN`
+
+Important boundary:
+
+- the firmware does **not** compute residuals, debris clusters, or debris scores
+- it only streams raw scan telemetry and robot state
+- all baseline comparison, clustering, and scoring happen on the computer in the Python control server
 
 ## Hardware Assumptions
 
@@ -47,6 +59,7 @@ Current recognized commands include:
 - `STOP_SCAN`
 - `HARD_STOP`
 - `RELEASE_MOTORS`
+- `ZERO_TURRET`
 
 The board accepts newline-delimited commands from the TCP connection.
 
@@ -64,6 +77,13 @@ The firmware emits line-based messages such as:
 - `COMMAND_ACK,...`
 - `COMMAND_FAIL,...`
 - `SENSOR_TIMEOUT,...`
+
+The server uses this telemetry to reconstruct:
+
+- raw captures
+- baseline comparisons
+- residual foreground points
+- debris candidates and debris scores
 
 ## Sensor Recovery
 
@@ -102,3 +122,12 @@ Use the serial monitor when debugging:
 - hostname or fallback IP issues
 - sensor initialization failures
 - scan-time sensor recovery failures
+- robot-side command/ack timing problems
+
+## Recommended IDE Flow
+
+For this firmware component, the intended day-to-day flow is:
+
+- open the repo in VS Code
+- use the PlatformIO extension or `pio` CLI to build and upload
+- commit and review changes through GitHub

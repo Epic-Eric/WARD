@@ -2,6 +2,12 @@
 
 This directory contains the single-file browser control dashboard served by FastAPI.
 
+Expected workflow:
+
+- edit in VS Code
+- keep changes versioned in GitHub
+- run the FastAPI server separately while iterating on the UI
+
 Main file:
 
 - `index.html`
@@ -15,10 +21,11 @@ The page is served from:
 The control UI is the operator-facing dashboard for:
 
 - starting a scan
-- saving a baseline
+- saving the last scan as a baseline
 - starting and stopping monitoring
 - watching connection and robot state
 - viewing live raw, residual, and baseline plots
+- reviewing top debris candidates from residual clustering
 
 ## Plot Modes
 
@@ -35,12 +42,52 @@ Important:
 - the tolerance does not change the saved baseline
 - it only changes which rays qualify as foreground residuals
 
+Residual mode is foreground-only:
+
+- the point stays at the current scan position
+- it appears only when the current ray is closer than the baseline by more than the tolerance
+- this means the residual plot shows the shape of the current blocking object
+
+## Debris Clusters In The UI
+
+When residuals are present, the control page also shows the top debris candidates.
+
+Each debris candidate is produced by the control server after:
+
+- residual foreground gating
+- spatial clustering
+- debris validation heuristics
+
+The control page displays:
+
+- top 3 ranked debris candidates
+- point count
+- max occlusion depth
+- cluster size in millimeters
+
+## Debris Score
+
+The score shown in the control page is a ranking heuristic, not a probability.
+
+It is computed on the control-server side from:
+
+- maximum occlusion
+- mean occlusion
+- point count
+- angular occupancy ratio
+- compactness of the cluster bounding box
+
+The exact formula is documented in:
+
+- [README.md](/Users/haysoncheung/programs/PRAXIS/praxis3/WARD/README.md)
+- [control_server/services/README.md](/Users/haysoncheung/programs/PRAXIS/praxis3/WARD/control_server/services/README.md)
+
 ## Main Controls
 
 Important buttons currently wired in the UI:
 
 - `Start Scan`
-- `Save Baseline`
+- `Save Last Scan as Baseline`
 - `Start Monitoring`
 - `Stop Monitoring`
 - `Raw`
@@ -68,6 +115,7 @@ The page shows:
 - sensor timeout banner
 - current capture and baseline paths
 - residual capture summary
+- debris ranking cards
 - monitoring schedule and last event text
 
 ## Editing Notes

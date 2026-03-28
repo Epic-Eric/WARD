@@ -148,6 +148,11 @@
       word-break: break-word;
     }
 
+    .soft-disabled {
+      background: rgba(185, 120, 31, 0.16);
+      color: #845100;
+    }
+
     .toolbar {
       display: grid;
       gap: 12px;
@@ -367,12 +372,168 @@
       color: var(--muted);
     }
 
+    .debris-panel {
+      margin-top: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .debris-panel h3 {
+      margin: 0;
+      font-size: 0.95rem;
+      letter-spacing: 0.02em;
+      color: var(--muted);
+    }
+
+    .debris-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .debris-item {
+      width: 100%;
+      display: grid;
+      gap: 4px;
+      text-align: left;
+      border-radius: 16px;
+      padding: 12px 14px;
+      background: rgba(216, 205, 191, 0.34);
+      color: var(--ink);
+    }
+
+    .debris-item.active {
+      background: rgba(176, 73, 58, 0.16);
+      box-shadow: inset 0 0 0 1px rgba(176, 73, 58, 0.25);
+    }
+
+    .debris-item .meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .debris-empty {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
     canvas {
       width: 100%;
       height: 280px;
       border-radius: 16px;
       background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 231, 218, 0.85));
       border: 1px solid rgba(216, 205, 191, 0.85);
+    }
+
+    .app-alert-stack {
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      z-index: 50;
+      display: grid;
+      gap: 12px;
+      pointer-events: none;
+    }
+
+    .app-alert {
+      min-width: 300px;
+      max-width: min(420px, calc(100vw - 32px));
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255, 250, 242, 0.97);
+      box-shadow: 0 18px 40px rgba(52, 41, 24, 0.16);
+      backdrop-filter: blur(14px);
+      pointer-events: auto;
+    }
+
+    .app-alert.warn {
+      border-color: rgba(185, 120, 31, 0.32);
+    }
+
+    .app-alert.danger {
+      border-color: rgba(176, 73, 58, 0.28);
+    }
+
+    .app-alert-body {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .app-alert-body strong {
+      font-size: 0.92rem;
+    }
+
+    .app-alert-body span {
+      color: var(--muted);
+      line-height: 1.4;
+      font-size: 0.88rem;
+    }
+
+    .app-alert-close {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 999px;
+      background: rgba(216, 205, 191, 0.42);
+      color: var(--muted);
+      flex: 0 0 auto;
+    }
+
+    .confirm-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: none;
+      place-items: center;
+      padding: 16px;
+      background: rgba(31, 42, 48, 0.28);
+      backdrop-filter: blur(8px);
+    }
+
+    .confirm-backdrop.visible {
+      display: grid;
+    }
+
+    .confirm-card {
+      width: min(440px, 100%);
+      display: grid;
+      gap: 12px;
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      background: rgba(255, 250, 242, 0.98);
+      box-shadow: 0 24px 56px rgba(52, 41, 24, 0.22);
+    }
+
+    .confirm-card p {
+      margin: 0;
+    }
+
+    .confirm-eyebrow {
+      color: var(--accent-strong);
+      font-weight: 700;
+      font-size: 0.75rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .confirm-detail {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 4px;
     }
 
     @media (max-width: 760px) {
@@ -412,7 +573,7 @@
             <input id="scan-degrees" type="number" min="1" max="360" step="1" value="20">
           </div>
           <button id="start-scan" class="primary">Start Scan</button>
-          <button id="save-baseline" class="secondary">Save Baseline</button>
+          <button id="save-baseline" class="secondary">Save Last Scan as Baseline</button>
           <button id="start-monitoring" class="warning">Start Monitoring</button>
         </div>
         <div class="toolbar-row">
@@ -516,8 +677,28 @@
           <canvas id="xz-plot" width="480" height="320"></canvas>
         </div>
       </div>
+      <div class="debris-panel">
+        <h3>Top 3 Debris</h3>
+        <div id="debris-list" class="debris-list">
+          <div class="debris-empty">No debris clusters detected.</div>
+        </div>
+      </div>
     </section>
   </main>
+
+  <div id="app-alert-stack" class="app-alert-stack" aria-live="polite"></div>
+
+  <div id="confirm-backdrop" class="confirm-backdrop">
+    <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <p class="confirm-eyebrow">Confirm Action</p>
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-detail" class="confirm-detail"></p>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" type="button" class="secondary">Cancel</button>
+        <button id="confirm-accept" type="button" class="primary">Confirm</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const startButton = document.getElementById("start-scan");
@@ -542,6 +723,13 @@
     const plotResidualButton = document.getElementById("plot-residual");
     const plotBaselineButton = document.getElementById("plot-baseline");
     const residualToleranceInput = document.getElementById("residual-tolerance");
+    const debrisList = document.getElementById("debris-list");
+    const appAlertStack = document.getElementById("app-alert-stack");
+    const confirmBackdrop = document.getElementById("confirm-backdrop");
+    const confirmTitle = document.getElementById("confirm-title");
+    const confirmDetail = document.getElementById("confirm-detail");
+    const confirmCancelButton = document.getElementById("confirm-cancel");
+    const confirmAcceptButton = document.getElementById("confirm-accept");
     const xyCanvas = document.getElementById("xy-plot");
     const xzCanvas = document.getElementById("xz-plot");
     const xyContext = xyCanvas.getContext("2d");
@@ -550,6 +738,64 @@
     let requestedPlotMode = "raw";
     let baselineHoldActive = false;
     let baselineAvailable = false;
+    let pendingBaselineAfterScan = false;
+    let previousScanInProgress = false;
+    let liveClusters = [];
+    let selectedClusterId = null;
+    let confirmResolver = null;
+
+    function showAlarm({ title, detail = "", tone = "neutral", timeoutMs = 4400 }) {
+      const alert = document.createElement("div");
+      alert.className = `app-alert ${tone}`;
+      alert.innerHTML = `
+        <div class="app-alert-body">
+          <strong>${title}</strong>
+          ${detail ? `<span>${detail}</span>` : ""}
+        </div>
+      `;
+
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.className = "app-alert-close";
+      closeButton.textContent = "×";
+      closeButton.addEventListener("click", () => alert.remove());
+      alert.appendChild(closeButton);
+      appAlertStack.appendChild(alert);
+
+      window.setTimeout(() => {
+        if (alert.isConnected) {
+          alert.remove();
+        }
+      }, timeoutMs);
+    }
+
+    function closeConfirm(result) {
+      confirmBackdrop.classList.remove("visible");
+      const resolve = confirmResolver;
+      confirmResolver = null;
+      if (resolve) {
+        resolve(result);
+      }
+    }
+
+    function askConfirm({
+      title,
+      detail = "",
+      confirmLabel = "Confirm",
+      cancelLabel = "Cancel",
+      tone = "primary",
+    }) {
+      confirmTitle.textContent = title;
+      confirmDetail.textContent = detail;
+      confirmCancelButton.textContent = cancelLabel;
+      confirmAcceptButton.textContent = confirmLabel;
+      confirmAcceptButton.className = tone === "danger" ? "danger" : "primary";
+      confirmBackdrop.classList.add("visible");
+
+      return new Promise((resolve) => {
+        confirmResolver = resolve;
+      });
+    }
 
     function setText(id, value) {
       document.getElementById(id).textContent = value ?? "-";
@@ -695,21 +941,34 @@
       const scanning = Boolean(status.scan_in_progress);
       const monitoring = Boolean(status.monitoring_active);
       const busyAutomation = Boolean(status.pending_operation);
+      const scanJustFinished = previousScanInProgress && !scanning;
+      previousScanInProgress = scanning;
 
       if (scanning || !connected || status.last_error) {
         startPending = false;
+      }
+
+      if (scanJustFinished && pendingBaselineAfterScan) {
+        pendingBaselineAfterScan = false;
+        if ((status.last_scan_result && status.last_scan_result.capture_path) || status.last_capture) {
+          saveBaseline(true);
+        } else {
+          eventLog.textContent = "Baseline capture skipped because no scan capture was available.";
+        }
       }
 
       const linkState = connected ? (status.robot_connection_state === "stale" ? "stale" : "idle") : "disconnected";
       setPillState(connectionPill, linkState, connected ? "Robot link online" : "Robot link offline");
       setPillState(robotModePill, status.robot_connection_state, formatRobotConnectionState(status.robot_connection_state));
 
+      const latestCaptureExists = Boolean(status.last_scan_result && status.last_scan_result.capture_path) || Boolean(status.last_capture);
       startButton.disabled = !connected || scanning || monitoring || busyAutomation || startPending;
-      saveBaselineButton.disabled = !connected || scanning || monitoring || busyAutomation;
-      startMonitoringButton.disabled = !connected || scanning || monitoring || busyAutomation || !status.baseline_exists;
+      saveBaselineButton.disabled = scanning || monitoring || busyAutomation || !latestCaptureExists;
+      startMonitoringButton.disabled = !connected || scanning || monitoring || busyAutomation;
+      startMonitoringButton.classList.toggle("soft-disabled", !status.baseline_exists);
       stopButton.disabled = !connected || (!scanning && !monitoring);
       stopMonitoringButton.disabled = !monitoring;
-      hardStopButton.disabled = !connected || !scanning;
+      hardStopButton.disabled = !connected;
       releaseButton.disabled = !connected;
       zeroButton.disabled = !connected || scanning || monitoring || busyAutomation;
       importBaselineButton.disabled = monitoring || busyAutomation;
@@ -736,16 +995,20 @@
       ctx.fillText(titleY, width / 2 + 8, 24);
     }
 
-    function visiblePoints(points) {
-      return points.filter((point) => !(point.length > 4 && Number(point[4]) > 0.5));
+    function visiblePoints(points, renderMode = "raw") {
+      let nextPoints = points.filter((point) => !(point.length > 4 && Number(point[4]) > 0.5));
+      if (renderMode === "residual" && selectedClusterId) {
+        nextPoints = nextPoints.filter((point) => point[6] === selectedClusterId);
+      }
+      return nextPoints;
     }
 
-    function computeBounds(points, yIndex) {
+    function computeBounds(points, yIndex, renderMode = "raw") {
       let minX = -100;
       let maxX = 100;
       let minY = -100;
       let maxY = 100;
-      const drawablePoints = visiblePoints(points);
+      const drawablePoints = visiblePoints(points, renderMode);
 
       if (drawablePoints.length > 0) {
         minX = Math.min(...drawablePoints.map((point) => point[0]));
@@ -783,7 +1046,39 @@
       return `rgba(11, 122, 117, ${intensity})`;
     }
 
-    function drawPointSet(ctx, canvas, points, yIndex, xLabel, yLabel, renderMode) {
+    function drawClusterBoxes(ctx, bounds, clusters, yIndex, left, right, top, bottom) {
+      const visibleClusters = selectedClusterId
+        ? clusters.filter((cluster) => cluster.cluster_id === selectedClusterId)
+        : clusters;
+
+      for (const cluster of visibleClusters) {
+        const bbox = cluster.bbox;
+        if (!bbox) {
+          continue;
+        }
+        const xMin = project(bbox.min_x_mm, bounds.minX, bounds.maxX, left, right);
+        const xMax = project(bbox.max_x_mm, bounds.minX, bounds.maxX, left, right);
+        const yMinValue = yIndex === 1 ? bbox.min_y_mm : bbox.min_z_mm;
+        const yMaxValue = yIndex === 1 ? bbox.max_y_mm : bbox.max_z_mm;
+        const yTop = project(yMaxValue, bounds.minY, bounds.maxY, bottom, top);
+        const yBottom = project(yMinValue, bounds.minY, bounds.maxY, bottom, top);
+        const selected = cluster.cluster_id === selectedClusterId;
+
+        ctx.strokeStyle = selected ? "#7f2718" : "rgba(176, 73, 58, 0.55)";
+        ctx.lineWidth = selected ? 3 : 1.5;
+        ctx.strokeRect(xMin, yTop, Math.max(8, xMax - xMin), Math.max(8, yBottom - yTop));
+
+        ctx.fillStyle = selected ? "#7f2718" : "rgba(176, 73, 58, 0.82)";
+        ctx.font = "11px Menlo, monospace";
+        ctx.fillText(
+          `${cluster.score.toFixed(1)}`,
+          xMin + 4,
+          Math.max(16, yTop - 6),
+        );
+      }
+    }
+
+    function drawPointSet(ctx, canvas, points, yIndex, xLabel, yLabel, renderMode, clusters = []) {
       const { width, height } = canvas;
       ctx.clearRect(0, 0, width, height);
 
@@ -791,7 +1086,7 @@
       ctx.fillRect(0, 0, width, height);
       drawAxes(ctx, width, height, xLabel, yLabel);
 
-      const bounds = computeBounds(points, yIndex);
+      const bounds = computeBounds(points, yIndex, renderMode);
       const left = 24;
       const right = width - 24;
       const top = 24;
@@ -804,12 +1099,16 @@
       ctx.arc(originX, originY, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      const drawablePoints = visiblePoints(points);
+      const drawablePoints = visiblePoints(points, renderMode);
       for (const point of drawablePoints) {
         const x = project(point[0], bounds.minX, bounds.maxX, left, right);
         const y = project(point[yIndex], bounds.minY, bounds.maxY, bottom, top);
         ctx.fillStyle = pointStyle(point, renderMode);
         ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+      }
+
+      if (renderMode === "residual" && clusters.length > 0) {
+        drawClusterBoxes(ctx, bounds, clusters, yIndex, left, right, top, bottom);
       }
 
       ctx.fillStyle = "#6d777c";
@@ -832,13 +1131,58 @@
       plotBaselineButton.disabled = !allowBaseline;
     }
 
-    function renderLivePlots(points, renderMode, requestedMode = "raw", residualAvailable = false) {
+    function renderDebrisList(clusters = []) {
+      const topClusters = clusters.slice(0, 3);
+      if (selectedClusterId && !clusters.some((cluster) => cluster.cluster_id === selectedClusterId)) {
+        selectedClusterId = null;
+      }
+
+      if (topClusters.length === 0) {
+        debrisList.innerHTML = '<div class="debris-empty">No debris clusters detected.</div>';
+        return;
+      }
+
+      debrisList.innerHTML = "";
+      const allButton = document.createElement("button");
+      allButton.type = "button";
+      allButton.className = `debris-item ${selectedClusterId == null ? "active" : ""}`;
+      allButton.innerHTML = `
+        <strong>All debris</strong>
+        <div class="meta"><span>${clusters.length} clusters</span><span>Show all</span></div>
+      `;
+      allButton.addEventListener("click", () => {
+        selectedClusterId = null;
+        renderDebrisList(liveClusters);
+        refreshLivePoints();
+      });
+      debrisList.appendChild(allButton);
+
+      for (const [index, cluster] of topClusters.entries()) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `debris-item ${selectedClusterId === cluster.cluster_id ? "active" : ""}`;
+        button.innerHTML = `
+          <strong>#${index + 1} · Score ${Number(cluster.score).toFixed(1)}</strong>
+          <div class="meta"><span>${cluster.point_count} pts</span><span>Occ ${Number(cluster.max_occlusion_mm).toFixed(1)} mm</span></div>
+          <div class="meta"><span>${Number(cluster.bbox.size_x_mm).toFixed(0)} × ${Number(cluster.bbox.size_y_mm).toFixed(0)} × ${Number(cluster.bbox.size_z_mm).toFixed(0)} mm</span><span>${cluster.cluster_id}</span></div>
+        `;
+        button.addEventListener("click", () => {
+          selectedClusterId = selectedClusterId === cluster.cluster_id ? null : cluster.cluster_id;
+          renderDebrisList(liveClusters);
+          refreshLivePoints();
+        });
+        debrisList.appendChild(button);
+      }
+    }
+
+    function renderLivePlots(points, renderMode, requestedMode = "raw", residualAvailable = false, clusters = []) {
       plotMode.textContent = renderMode;
       plotMode.classList.toggle("residual", renderMode === "residual");
       plotMode.classList.toggle("baseline", renderMode === "baseline");
       setPlotModeButtons(renderMode, residualAvailable, baselineAvailable);
-      drawPointSet(xyContext, xyCanvas, points, 1, "X", "Y", renderMode);
-      drawPointSet(xzContext, xzCanvas, points, 2, "X", "Z", renderMode);
+      drawPointSet(xyContext, xyCanvas, points, 1, "X", "Y", renderMode, clusters);
+      drawPointSet(xzContext, xzCanvas, points, 2, "X", "Z", renderMode, clusters);
+      renderDebrisList(renderMode === "residual" ? clusters : []);
     }
 
     async function refreshStatus() {
@@ -862,11 +1206,13 @@
         );
         const payload = await response.json();
         baselineAvailable = Boolean(payload.baseline_available);
+        liveClusters = Array.isArray(payload.clusters) ? payload.clusters : [];
         renderLivePlots(
           payload.points || [],
           payload.render_mode || "raw",
           payload.requested_mode || requestedPlotMode,
-          Boolean(payload.baseline_available)
+          Boolean(payload.baseline_available),
+          Array.isArray(payload.clusters) ? payload.clusters : []
         );
       } catch (error) {
         eventLog.textContent = `Live plot request failed: ${error}`;
@@ -903,6 +1249,18 @@
     plotBaselineButton.addEventListener("pointerleave", releaseBaselineHold);
     plotBaselineButton.addEventListener("pointercancel", releaseBaselineHold);
     window.addEventListener("pointerup", releaseBaselineHold);
+    confirmBackdrop.addEventListener("click", (event) => {
+      if (event.target === confirmBackdrop) {
+        closeConfirm(false);
+      }
+    });
+    confirmCancelButton.addEventListener("click", () => closeConfirm(false));
+    confirmAcceptButton.addEventListener("click", () => closeConfirm(true));
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && confirmResolver) {
+        closeConfirm(false);
+      }
+    });
 
     async function sendJson(endpoint, method = "POST", payload = null) {
       const response = await fetch(endpoint, {
@@ -921,19 +1279,41 @@
     async function startScan() {
       try {
         const scanDegrees = readScanDegrees();
+        let shouldSaveAsBaseline = false;
+        if (!baselineAvailable) {
+          shouldSaveAsBaseline = await askConfirm({
+            title: "No baseline saved yet.",
+            detail: "Start this scan and save the last captured result as the baseline when it stops?",
+            confirmLabel: "Start And Save",
+            cancelLabel: "Start Only",
+          });
+        }
         startPending = true;
         startButton.disabled = true;
         await sendJson("/api/robot/start-scan", "POST", { scan_degrees: scanDegrees });
+        pendingBaselineAfterScan = shouldSaveAsBaseline;
       } catch (error) {
+        pendingBaselineAfterScan = false;
         startPending = false;
         eventLog.textContent = `Start scan failed: ${error.message}`;
       }
     }
 
-    async function saveBaseline() {
+    async function saveBaseline(skipConfirm = false) {
       try {
-        const scanDegrees = readScanDegrees();
-        await sendJson("/api/baseline/save", "POST", { scan_degrees: scanDegrees });
+        if (!skipConfirm && baselineAvailable) {
+          const confirmed = await askConfirm({
+            title: "Replace current baseline?",
+            detail: "This will overwrite the existing baseline with the most recent captured scan.",
+            confirmLabel: "Replace Baseline",
+            cancelLabel: "Keep Current",
+            tone: "danger",
+          });
+          if (!confirmed) {
+            return;
+          }
+        }
+        await sendJson("/api/baseline/save", "POST");
       } catch (error) {
         eventLog.textContent = `Save baseline failed: ${error.message}`;
       }
@@ -941,6 +1321,14 @@
 
     async function startMonitoring() {
       try {
+        if (!baselineAvailable) {
+          showAlarm({
+            title: "Baseline Needed",
+            detail: "Press Start, then choose to save that scan as the baseline before monitoring.",
+            tone: "warn",
+          });
+          return;
+        }
         const scanDegrees = readScanDegrees();
         await sendJson("/api/monitoring/start", "POST", { scan_degrees: scanDegrees });
       } catch (error) {
@@ -954,6 +1342,20 @@
       } catch (error) {
         eventLog.textContent = `${label} failed: ${error.message}`;
       }
+    }
+
+    async function deleteBaseline() {
+      const confirmed = await askConfirm({
+        title: "Delete baseline?",
+        detail: "Residual monitoring and residual view will be unavailable until a new baseline is saved.",
+        confirmLabel: "Delete Baseline",
+        cancelLabel: "Cancel",
+        tone: "danger",
+      });
+      if (!confirmed) {
+        return;
+      }
+      await sendSimpleCommand("/api/baseline", "Delete baseline", "DELETE");
     }
 
     function openBaselineImportPicker() {
@@ -990,7 +1392,7 @@
     zeroButton.addEventListener("click", () => sendSimpleCommand("/api/robot/zero-turret", "Zero turret"));
     importBaselineButton.addEventListener("click", openBaselineImportPicker);
     importBaselineFileInput.addEventListener("change", importBaselineFile);
-    deleteBaselineButton.addEventListener("click", () => sendSimpleCommand("/api/baseline", "Delete baseline", "DELETE"));
+    deleteBaselineButton.addEventListener("click", deleteBaseline);
 
     renderLivePlots([], "raw", requestedPlotMode, false);
     refreshStatus();

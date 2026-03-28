@@ -907,7 +907,7 @@ void loop() {
         Serial.println("Motors released while idle.");
     } else if (command == RobotCommand::ZeroTurret) {
         releaseAllMotors();
-        zeroAllAxes();
+        resetToStartingPosition();
         kRobotLink.sendState("ZEROED");
         kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
         Serial.println("Turret released and zeroed while idle.");
