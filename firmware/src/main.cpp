@@ -9,8 +9,8 @@
 namespace Config {
 constexpr unsigned long kSerialBaudRate = 115200;
 
-constexpr char kWifiSsid[] = "S";
-constexpr char kWifiPassword[] = "87654321";
+constexpr char kWifiSsid[] = "Eric’s iPhone";
+constexpr char kWifiPassword[] = "88888888";
 constexpr char kServerHost[] = "Haysons-MacBook-Pro.local";
 const IPAddress kServerFallbackIp(172, 20, 10, 4);
 constexpr uint16_t kServerPort = 9000;
