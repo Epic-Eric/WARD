@@ -57,6 +57,7 @@ constexpr float kPitchSweepEndDeg = -25.0f;
 constexpr float kYawSweepStartDeg = 0.0f;
 constexpr float kDefaultScanDegrees = 20.0f;
 constexpr float kMaxScanDegrees = 360.0f;
+constexpr float kPitchSweepStepDeg = kPitchAnglePerStepDeg;
 constexpr float kYawSweepStepDeg = 1.0f;
 
 constexpr size_t kCommandBufferSize = 48;
@@ -761,7 +762,7 @@ public:
 
             for (float pitchTarget = Config::kPitchSweepStartDeg;
                  pitchTarget <= Config::kPitchSweepEndDeg + 0.001f;
-                 pitchTarget += Config::kPitchAnglePerStepDeg) {
+                 pitchTarget += Config::kPitchSweepStepDeg) {
                 applyCommand(robotLink_.pollCommand());
                 if (hardStopRequested) {
                     break;
