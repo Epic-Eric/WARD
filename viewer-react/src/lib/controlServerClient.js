@@ -57,14 +57,23 @@ export function deleteBaseline() {
   return jsonRequest("/api/baseline", "DELETE");
 }
 
-export function startMonitoring(scanDegrees) {
+export function startMonitoring(scanDegrees, autoClearDebris = true) {
   return jsonRequest("/api/monitoring/start", "POST", {
     scan_degrees: scanDegrees,
+    auto_clear_debris: autoClearDebris,
   });
+}
+
+export function setAutoClearDebris(enabled) {
+  return jsonRequest("/api/monitoring/set-auto-clear", "POST", { enabled });
 }
 
 export function stopMonitoring() {
   return jsonRequest("/api/monitoring/stop");
+}
+
+export function aimAtCluster(centroidMm) {
+  return jsonRequest("/api/robot/aim-at-cluster", "POST", { centroid_mm: centroidMm });
 }
 
 export function installBaselineBundle(bundle, sourceName, sourceView = "baseline") {

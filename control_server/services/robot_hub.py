@@ -122,6 +122,10 @@ class RobotTcpHub:
             self._robot_state = "zeroing"
             self._scan_in_progress = False
             return
+        if normalized_command.startswith("MOVE_TO,"):
+            self._robot_state = "moving"
+            self._scan_in_progress = False
+            return
 
     def scan_result_token(self) -> int:
         with self._lock:

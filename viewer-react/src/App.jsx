@@ -5,7 +5,7 @@ import * as THREE from "three";
 import AlertToast from "./components/AlertToast";
 import CommandBar from "./components/CommandBar";
 import ConfirmDialog from "./components/ConfirmDialog";
-import { installBaselineBundle } from "./lib/controlServerClient";
+import { aimAtCluster, installBaselineBundle, setAutoClearDebris as apiSetAutoClearDebris } from "./lib/controlServerClient";
 
 function emptyPayload(mode = "raw") {
   return {
@@ -763,20 +763,23 @@ function HoveredPointMarker({ sample }) {
   );
 }
 
-function DebrisClusterBox({ cluster, selectedClusterId }) {
+function DebrisClusterBox({ cluster, selectedClusterId, onContextMenu }) {
   const bbox = cluster?.bbox;
-  const geometry = useMemo(() => {
-    if (!bbox) {
-      return null;
-    }
-
-    const sizeX = Math.max(Number(bbox.size_x_mm) / 1000, 0.02);
-    const sizeY = Math.max(Number(bbox.size_y_mm) / 1000, 0.02);
-    const sizeZ = Math.max(Number(bbox.size_z_mm) / 1000, 0.02);
-    return new THREE.EdgesGeometry(new THREE.BoxGeometry(sizeX, sizeY, sizeZ));
+  const size = useMemo(() => {
+    if (!bbox) return null;
+    return {
+      x: Math.max(Number(bbox.size_x_mm) / 1000, 0.02),
+      y: Math.max(Number(bbox.size_y_mm) / 1000, 0.02),
+      z: Math.max(Number(bbox.size_z_mm) / 1000, 0.02),
+    };
   }, [bbox]);
 
-  if (!bbox || !geometry) {
+  const edgesGeometry = useMemo(() => {
+    if (!size) return null;
+    return new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z));
+  }, [size]);
+
+  if (!bbox || !size || !edgesGeometry) {
     return null;
   }
 
@@ -789,9 +792,21 @@ function DebrisClusterBox({ cluster, selectedClusterId }) {
   ];
   return (
     <group position={center}>
-      <lineSegments geometry={geometry}>
+      <lineSegments geometry={edgesGeometry}>
         <lineBasicMaterial color={color} linewidth={selected ? 2 : 1} />
       </lineSegments>
+      {onContextMenu && (
+        <mesh
+          onContextMenu={(e) => {
+            e.stopPropagation();
+            e.nativeEvent.preventDefault();
+            onContextMenu(e, cluster);
+          }}
+        >
+          <boxGeometry args={[size.x, size.y, size.z]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
     </group>
   );
 }
@@ -858,7 +873,7 @@ function DebrisClusterLabels({ clusters, selectedClusterId }) {
   );
 }
 
-function DebrisClusterBoxes({ clusters, selectedClusterId }) {
+function DebrisClusterBoxes({ clusters, selectedClusterId, onClusterContextMenu }) {
   if (!Array.isArray(clusters) || clusters.length === 0) {
     return null;
   }
@@ -870,6 +885,7 @@ function DebrisClusterBoxes({ clusters, selectedClusterId }) {
           key={cluster.cluster_id}
           cluster={cluster}
           selectedClusterId={selectedClusterId}
+          onContextMenu={onClusterContextMenu}
         />
       ))}
       <DebrisClusterLabels clusters={clusters} selectedClusterId={selectedClusterId} />
@@ -1226,6 +1242,9 @@ export default function App() {
   const [hoveredSample, setHoveredSample] = useState(null);
   const [cameraCommand, setCameraCommand] = useState({ type: "iso", nonce: 0 });
   const [clusterRefreshNonce, setClusterRefreshNonce] = useState(0);
+  const [clusterContextMenu, setClusterContextMenu] = useState(null);
+  const [shootingCluster, setShootingCluster] = useState(false);
+  const [autoClearDebris, setAutoClearDebris] = useState(true);
   const effectiveMode = baselineHoldActive || baselinePinned ? "baseline" : requestedMode;
   const livePayload = useLivePoints(effectiveMode, residualTolerance, clusterRefreshNonce);
   const residualLivePayload = useLivePoints("residual", residualTolerance, clusterRefreshNonce);
@@ -1345,6 +1364,41 @@ export default function App() {
     setCameraCommand({ type, nonce: Date.now() });
   }
 
+  function handleThreeClusterContextMenu(threeEvent, cluster) {
+    threeEvent.nativeEvent.preventDefault();
+    setClusterContextMenu({ x: threeEvent.clientX, y: threeEvent.clientY, cluster });
+  }
+
+  function handleLeaderboardClusterContextMenu(domEvent, cluster) {
+    domEvent.preventDefault();
+    setClusterContextMenu({ x: domEvent.clientX, y: domEvent.clientY, cluster });
+  }
+
+  async function handleShootCluster(cluster) {
+    const centroid = Array.isArray(cluster.centroid_mm) && cluster.centroid_mm.length === 3
+      ? cluster.centroid_mm
+      : [cluster.bbox.center_x_mm, cluster.bbox.center_y_mm, cluster.bbox.center_z_mm];
+    setShootingCluster(true);
+    try {
+      await aimAtCluster(centroid);
+      setClusterContextMenu(null);
+      setCommandMessage(`Aimed laser at ${cluster.cluster_id}.`);
+    } catch (error) {
+      setCommandMessage(`Aim failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setShootingCluster(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!clusterContextMenu) return;
+    function onKeyDown(e) {
+      if (e.key === "Escape") setClusterContextMenu(null);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [clusterContextMenu]);
+
   function triggerResidualClustering() {
     if (importedBundle) {
       setCommandMessage("Imported bundles use their saved clustering snapshot.");
@@ -1357,6 +1411,12 @@ export default function App() {
     setClusterRefreshNonce((value) => value + 1);
     setCommandMessage("Residual clustering refreshed.");
   }
+
+  useEffect(() => {
+    if (liveStatus?.auto_clear_debris != null) {
+      setAutoClearDebris(Boolean(liveStatus.auto_clear_debris));
+    }
+  }, [liveStatus?.auto_clear_debris]);
 
   useEffect(() => {
     function releaseBaselineHold() {
@@ -1662,6 +1722,7 @@ export default function App() {
               <DebrisClusterBoxes
                 clusters={clusters}
                 selectedClusterId={selectedClusterId}
+                onClusterContextMenu={handleThreeClusterContextMenu}
               />
               {selectedClusterId ? (
                 <>
@@ -1771,6 +1832,18 @@ export default function App() {
                 onChange={(event) => setResidualTolerance(Number(event.target.value) || 0)}
               />
             </label>
+            <label className="command-field command-field--toggle">
+              <input
+                type="checkbox"
+                checked={autoClearDebris}
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  setAutoClearDebris(enabled);
+                  apiSetAutoClearDebris(enabled).catch(() => {});
+                }}
+              />
+              <span>Auto-clear debris</span>
+            </label>
             {importMessage ? <p className="subtle import-note">{importMessage}</p> : null}
           </div>
         </details>
@@ -1833,6 +1906,7 @@ export default function App() {
                           selectedClusterId === cluster.cluster_id ? null : cluster.cluster_id,
                         );
                       }}
+                      onContextMenu={(e) => handleLeaderboardClusterContextMenu(e, cluster)}
                     >
                       <strong>#{index + 1} · Score {Number(cluster.score).toFixed(1)}</strong>
                       <div className="cluster-meta">
@@ -1994,6 +2068,7 @@ export default function App() {
               status={liveStatus}
               scanDegrees={scanDegreesInput}
               setScanDegrees={setScanDegreesInput}
+              autoClearDebris={autoClearDebris}
               scanDegreesInputRef={scanDegreesInputRef}
               onAlarm={raiseAlarm}
               onCommandMessage={setCommandMessage}
@@ -2033,6 +2108,32 @@ export default function App() {
           {commandMessage ? <div className="command-message">{commandMessage}</div> : null}
         </div>
       </div>
+
+      {clusterContextMenu ? (
+        <>
+          <div
+            className="cluster-context-backdrop"
+            onClick={() => setClusterContextMenu(null)}
+          />
+          <div
+            className="cluster-context-menu"
+            style={{ left: clusterContextMenu.x, top: clusterContextMenu.y }}
+          >
+            <div className="cluster-context-menu__header">
+              <span className="cluster-context-menu__id">{clusterContextMenu.cluster.cluster_id}</span>
+              <span>Score {Number(clusterContextMenu.cluster.score).toFixed(1)} · Occ {Number(clusterContextMenu.cluster.max_occlusion_mm).toFixed(1)} mm</span>
+            </div>
+            <button
+              type="button"
+              className="cluster-context-menu__shoot"
+              onClick={() => handleShootCluster(clusterContextMenu.cluster)}
+              disabled={shootingCluster || !status?.robot_connected}
+            >
+              {shootingCluster ? "Aiming…" : "Shoot laser"}
+            </button>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

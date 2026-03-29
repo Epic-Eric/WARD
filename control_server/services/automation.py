@@ -1,11 +1,41 @@
 from __future__ import annotations
 
 import csv
+import math
 import shutil
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+# Sensor / laser mounting geometry (all relative to the pitch-axis intersection)
+_SENSOR_FACE_OFFSET_MM = 34.0   # sensor face is 34 mm forward of the axis
+_SENSOR_ABOVE_AXIS_MM = 35.0    # sensor centre is 35 mm above the pitch axis
+_LASER_ABOVE_AXIS_MM = 13.0     # laser is 22 mm below sensor → 35 - 22 = 13 mm above axis
+
+
+def _compute_laser_angles(centroid_mm: list[float]) -> tuple[float, float]:
+    """Return (yaw_deg, pitch_deg) motor angles to aim the clearing laser at a
+    target whose 3-D position in the *axial frame* is given by centroid_mm.
+
+    Yaw is unchanged: the forward offset is along the boresight so it introduces
+    no lateral parallax.
+
+    Pitch uses the same parallax formula as the sensor, but inverted:
+        sensor: pitch_true  = pitch_motor - atan(t / R)
+        laser:  pitch_motor = pitch_true  + atan(t / R)
+    where t = _LASER_ABOVE_AXIS_MM (13 mm, smaller than the sensor's 35 mm
+    because the laser is 22 mm below the sensor) and R is the distance from the
+    pitch axis to the target.
+    """
+    cx, cy, cz = float(centroid_mm[0]), float(centroid_mm[1]), float(centroid_mm[2])
+    r_horiz = math.hypot(cx, cy)
+    yaw_deg = math.degrees(math.atan2(cy, cx))
+    R = math.hypot(r_horiz, cz)
+    pitch_true = math.degrees(math.atan2(cz, r_horiz)) if r_horiz > 0 or cz != 0 else 0.0
+    parallax_correction = math.degrees(math.atan(_LASER_ABOVE_AXIS_MM / R)) if R > 0 else 0.0
+    pitch_deg = pitch_true + parallax_correction
+    return round(yaw_deg, 2), round(pitch_deg, 2)
 
 from .common import load_json, write_json
 from .config import (
@@ -57,6 +87,10 @@ class ScanAutomationController:
         self._last_residual_summary: str | None = None
         self._last_residual_points: int | None = None
         self._last_monitor_capture: str | None = None
+        self._last_debris_clusters: list[dict] = []
+        self._clearing_debris_active = False
+        self._clearing_debris_sequence = 0
+        self._auto_clear_debris = True
         self._load_baseline_state()
 
     def _load_baseline_state(self) -> None:
@@ -105,7 +139,22 @@ class ScanAutomationController:
                 "last_residual_summary": self._last_residual_summary,
                 "last_residual_points": self._last_residual_points,
                 "last_monitor_capture": self._last_monitor_capture,
+                "last_debris_clusters": list(self._last_debris_clusters),
+                "clearing_debris_active": self._clearing_debris_active,
+                "clearing_debris_sequence": self._clearing_debris_sequence,
+                "auto_clear_debris": self._auto_clear_debris,
             }
+
+    def set_auto_clear_debris(self, enabled: bool) -> bool:
+        with self._lock:
+            self._auto_clear_debris = bool(enabled)
+        return self._auto_clear_debris
+
+    def aim_laser_at_cluster(self, centroid_mm: list[float]) -> tuple[float, float]:
+        """Compute laser motor angles for a centroid (axial frame) and send MOVE_TO."""
+        yaw_deg, pitch_deg = _compute_laser_angles(centroid_mm)
+        self.robot_hub.send_command(f"MOVE_TO,{yaw_deg:.2f},{pitch_deg:.2f}")
+        return yaw_deg, pitch_deg
 
     def set_residual_tolerance(self, tolerance_mm: float) -> float:
         normalized = max(0.0, float(tolerance_mm))
@@ -362,7 +411,7 @@ class ScanAutomationController:
             self._automation_error = None
             self._automation_event = "Baseline deleted."
 
-    def start_monitoring(self, scan_degrees: float) -> None:
+    def start_monitoring(self, scan_degrees: float, auto_clear_debris: bool = True) -> None:
         normalized = self.set_configured_scan_degrees(scan_degrees)
         with self._lock:
             if not self._baseline_exists:
@@ -372,6 +421,7 @@ class ScanAutomationController:
             if self._monitoring_active:
                 raise RuntimeError("Monitoring is already active.")
             self._monitoring_active = True
+            self._auto_clear_debris = bool(auto_clear_debris)
             self._monitor_stop_event.clear()
             self._next_monitor_scan_at = None
             self._automation_error = None
@@ -410,13 +460,56 @@ class ScanAutomationController:
                     capture_path = Path(capture_path_raw)
                     with self._lock:
                         residual_tolerance_mm = self._residual_tolerance_mm
-                    residual_path, summary, matched_points = write_residual_capture(self.capture_dir, self.baseline_path, capture_path, residual_tolerance_mm)
+                    residual_path, summary, matched_points, debris_clusters = write_residual_capture(self.capture_dir, self.baseline_path, capture_path, residual_tolerance_mm)
                     with self._lock:
                         self._last_monitor_capture = str(capture_path)
                         self._last_residual_path = str(residual_path)
                         self._last_residual_summary = summary
                         self._last_residual_points = matched_points
-                        self._automation_event = f"Monitoring scan complete. Residual saved to {residual_path.name}."
+                        self._last_debris_clusters = debris_clusters
+                        cluster_count = len(debris_clusters)
+                        self._automation_event = (
+                            f"Monitoring scan complete. {cluster_count} debris cluster(s) detected."
+                            if cluster_count else
+                            f"Monitoring scan complete. No debris detected."
+                        )
+
+                    if debris_clusters and not self._monitor_stop_event.is_set() and self._auto_clear_debris:
+                        with self._lock:
+                            self._clearing_debris_active = True
+                            self._clearing_debris_sequence += 1
+                        try:
+                            for cluster in debris_clusters:
+                                if self._monitor_stop_event.is_set():
+                                    break
+                                snap = self.robot_hub.snapshot()
+                                if not snap.get("robot_connected"):
+                                    break
+                                centroid_mm = cluster.get("centroid_mm", [0.0, 0.0, 0.0])
+                                yaw_deg, pitch_deg = _compute_laser_angles(centroid_mm)
+                                cluster_id = cluster.get("cluster_id", "?")
+                                with self._lock:
+                                    self._automation_event = (
+                                        f"Clearing debris: {cluster_id} "
+                                        f"(laser yaw={yaw_deg:.1f}\u00b0, pitch={pitch_deg:.1f}\u00b0)"
+                                    )
+                                try:
+                                    self.robot_hub.send_command(f"MOVE_TO,{yaw_deg:.2f},{pitch_deg:.2f}")
+                                except RuntimeError as exc:
+                                    with self._lock:
+                                        self._automation_error = str(exc)
+                                    break
+                                # Poll until robot returns to idle (up to 30 s)
+                                for _ in range(150):
+                                    if self._monitor_stop_event.wait(0.2):
+                                        break
+                                    if self.robot_hub.snapshot().get("robot_state") in {"idle", "disconnected"}:
+                                        break
+                                with self._lock:
+                                    self._automation_event = f"Debris cleared: {cluster_id}"
+                        finally:
+                            with self._lock:
+                                self._clearing_debris_active = False
                 except Exception as exc:
                     with self._lock:
                         self._automation_error = str(exc)

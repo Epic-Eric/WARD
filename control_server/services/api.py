@@ -221,6 +221,62 @@ def create_app(
 
         return combined_status(robot_hub, automation)
 
+    @app.post("/api/robot/move-to")
+    async def api_move_to(request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        try:
+            yaw_deg = float(payload.get("yaw_deg", 0.0))
+            pitch_deg = float(payload.get("pitch_deg", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="yaw_deg and pitch_deg must be numbers."
+            ) from exc
+
+        status = combined_status(robot_hub, automation)
+        if not status["robot_connected"]:
+            raise HTTPException(status_code=409, detail="Robot is not connected.")
+        if status["scan_in_progress"]:
+            raise HTTPException(status_code=409, detail="Robot is currently scanning.")
+
+        try:
+            robot_hub.send_command(f"MOVE_TO,{yaw_deg:.2f},{pitch_deg:.2f}")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return combined_status(robot_hub, automation)
+
+    @app.post("/api/robot/aim-at-cluster")
+    async def api_aim_at_cluster(request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        centroid_raw = payload.get("centroid_mm")
+        if not isinstance(centroid_raw, (list, tuple)) or len(centroid_raw) != 3:
+            raise HTTPException(status_code=400, detail="centroid_mm must be a list of 3 numbers.")
+        try:
+            centroid_mm = [float(v) for v in centroid_raw]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="centroid_mm values must be numbers.") from exc
+
+        status = combined_status(robot_hub, automation)
+        if not status["robot_connected"]:
+            raise HTTPException(status_code=409, detail="Robot is not connected.")
+        if status["scan_in_progress"]:
+            raise HTTPException(status_code=409, detail="Robot is currently scanning.")
+
+        try:
+            yaw_deg, pitch_deg = automation.aim_laser_at_cluster(centroid_mm)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {"yaw_deg": yaw_deg, "pitch_deg": pitch_deg, **combined_status(robot_hub, automation)}
+
     @app.post("/api/robot/zero-turret")
     async def api_zero_turret() -> dict[str, Any]:
         status = combined_status(robot_hub, automation)
@@ -281,7 +337,23 @@ def create_app(
 
     @app.post("/api/monitoring/start")
     async def api_start_monitoring(request: Request) -> dict[str, Any]:
-        scan_degrees = await read_scan_degrees(request)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        try:
+            scan_degrees = normalize_scan_degrees(
+                float(payload.get("scan_degrees", DEFAULT_SCAN_DEGREES))
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"scan_degrees must be between 0 and {MAX_SCAN_DEGREES:.0f}.",
+            ) from exc
+
+        auto_clear_debris = bool(payload.get("auto_clear_debris", True))
+
         status = combined_status(robot_hub, automation)
         if not status["robot_connected"]:
             raise HTTPException(status_code=409, detail="Robot is not connected.")
@@ -289,10 +361,19 @@ def create_app(
             raise HTTPException(status_code=409, detail="Robot is already scanning.")
 
         try:
-            automation.start_monitoring(scan_degrees)
+            automation.start_monitoring(scan_degrees, auto_clear_debris=auto_clear_debris)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        return combined_status(robot_hub, automation)
+
+    @app.post("/api/monitoring/set-auto-clear")
+    async def api_set_auto_clear(request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        automation.set_auto_clear_debris(bool(payload.get("enabled", True)))
         return combined_status(robot_hub, automation)
 
     @app.post("/api/monitoring/stop")

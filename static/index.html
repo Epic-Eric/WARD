@@ -575,6 +575,10 @@
           <button id="start-scan" class="primary">Start Scan</button>
           <button id="save-baseline" class="secondary">Save Last Scan as Baseline</button>
           <button id="start-monitoring" class="warning">Start Monitoring</button>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.88rem;font-weight:700;color:var(--muted);cursor:pointer;white-space:nowrap;">
+            <input id="auto-clear-debris" type="checkbox" checked style="accent-color:var(--accent);">
+            Auto-clear debris
+          </label>
         </div>
         <div class="toolbar-row">
           <button id="stop-scan" class="secondary">Stop</button>
@@ -585,6 +589,18 @@
           <button id="import-baseline" class="secondary">Import Baseline</button>
           <button id="delete-baseline" class="danger">Delete Baseline</button>
           <input id="import-baseline-file" type="file" accept="application/json,.json" hidden>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Pose Control</h2>
+      <div style="display:grid;gap:10px;">
+        <canvas id="pose-pad" width="560" height="200" style="cursor:crosshair;touch-action:none;height:200px;"></canvas>
+        <div style="display:flex;gap:20px;align-items:center;font-size:0.9rem;font-weight:700;color:var(--muted);">
+          <span>Target &mdash; Yaw: <span id="pad-target-yaw" style="color:var(--ink);">—</span></span>
+          <span>Pitch: <span id="pad-target-pitch" style="color:var(--ink);">—</span></span>
+          <span id="pad-status" style="margin-left:auto;color:var(--accent-strong);"></span>
         </div>
       </div>
     </section>
@@ -678,7 +694,8 @@
         </div>
       </div>
       <div class="debris-panel">
-        <h3>Top 3 Debris</h3>
+        <h3 id="debris-panel-title">Top 3 Debris</h3>
+        <div id="debris-clearing-banner" style="display:none;padding:10px 14px;border-radius:12px;background:rgba(185,120,31,0.16);color:#845100;font-weight:700;font-size:0.9rem;"></div>
         <div id="debris-list" class="debris-list">
           <div class="debris-empty">No debris clusters detected.</div>
         </div>
@@ -704,11 +721,17 @@
     const startButton = document.getElementById("start-scan");
     const saveBaselineButton = document.getElementById("save-baseline");
     const startMonitoringButton = document.getElementById("start-monitoring");
+    const autoClearDebrisCheckbox = document.getElementById("auto-clear-debris");
     const stopButton = document.getElementById("stop-scan");
     const stopMonitoringButton = document.getElementById("stop-monitoring");
     const hardStopButton = document.getElementById("hard-stop");
     const releaseButton = document.getElementById("release-motors");
     const zeroButton = document.getElementById("zero-turret");
+    const posePadCanvas = document.getElementById("pose-pad");
+    const posePadCtx = posePadCanvas.getContext("2d");
+    const padTargetYawLabel = document.getElementById("pad-target-yaw");
+    const padTargetPitchLabel = document.getElementById("pad-target-pitch");
+    const padStatusLabel = document.getElementById("pad-status");
     const importBaselineButton = document.getElementById("import-baseline");
     const importBaselineFileInput = document.getElementById("import-baseline-file");
     const deleteBaselineButton = document.getElementById("delete-baseline");
@@ -724,6 +747,8 @@
     const plotBaselineButton = document.getElementById("plot-baseline");
     const residualToleranceInput = document.getElementById("residual-tolerance");
     const debrisList = document.getElementById("debris-list");
+    const debrisClearingBanner = document.getElementById("debris-clearing-banner");
+    const debrisPanelTitle = document.getElementById("debris-panel-title");
     const appAlertStack = document.getElementById("app-alert-stack");
     const confirmBackdrop = document.getElementById("confirm-backdrop");
     const confirmTitle = document.getElementById("confirm-title");
@@ -736,6 +761,14 @@
     const xzContext = xzCanvas.getContext("2d");
     let startPending = false;
     let requestedPlotMode = "raw";
+    let lastDebrisClearingSeq = 0;
+    const PAD_YAW_MIN = -180, PAD_YAW_MAX = 180;
+    const PAD_PITCH_MIN = -90, PAD_PITCH_MAX = 30;
+    const PAD_MARGIN = 28;
+    let padTarget = null;
+    let padDragging = false;
+    let padEnabled = false;
+    let padRobotPos = null;
     let baselineHoldActive = false;
     let baselineAvailable = false;
     let pendingBaselineAfterScan = false;
@@ -948,6 +981,18 @@
         startPending = false;
       }
 
+      const clearingSeq = status.clearing_debris_sequence ?? 0;
+      if (clearingSeq > lastDebrisClearingSeq) {
+        lastDebrisClearingSeq = clearingSeq;
+        const clusterCount = (status.last_debris_clusters || []).length;
+        showAlarm({
+          title: `Clearing ${clusterCount} debris cluster${clusterCount !== 1 ? "s" : ""}`,
+          detail: "Robot is moving to each debris centroid autonomously.",
+          tone: "warn",
+          timeoutMs: 6000,
+        });
+      }
+
       if (scanJustFinished && pendingBaselineAfterScan) {
         pendingBaselineAfterScan = false;
         if ((status.last_scan_result && status.last_scan_result.capture_path) || status.last_capture) {
@@ -971,12 +1016,36 @@
       hardStopButton.disabled = !connected;
       releaseButton.disabled = !connected;
       zeroButton.disabled = !connected || scanning || monitoring || busyAutomation;
+      padEnabled = connected && !scanning && !monitoring;
+      posePadCanvas.style.cursor = padEnabled ? "crosshair" : "not-allowed";
+      posePadCanvas.style.opacity = padEnabled ? "1" : "0.55";
+      padRobotPos = (status.current_yaw_deg != null && status.current_pitch_deg != null)
+        ? { yaw: status.current_yaw_deg, pitch: status.current_pitch_deg }
+        : null;
+      drawPosePad();
       importBaselineButton.disabled = monitoring || busyAutomation;
       deleteBaselineButton.disabled = monitoring || busyAutomation || !status.baseline_exists;
 
       startButton.textContent = scanning ? "Scanning..." : (startPending ? "Command Sent..." : "Start Scan");
       saveBaselineButton.textContent = busyAutomation ? "Saving..." : "Save Baseline";
       startMonitoringButton.textContent = monitoring ? "Monitoring..." : "Start Monitoring";
+
+      if (document.activeElement !== autoClearDebrisCheckbox && status.auto_clear_debris != null) {
+        autoClearDebrisCheckbox.checked = Boolean(status.auto_clear_debris);
+      }
+
+      const clearingActive = Boolean(status.clearing_debris_active);
+      const lastClusters = status.last_debris_clusters || [];
+      debrisPanelTitle.textContent = clearingActive
+        ? `Clearing ${lastClusters.length} Debris Cluster${lastClusters.length !== 1 ? "s" : ""}`
+        : "Top 3 Debris";
+      debrisClearingBanner.style.display = clearingActive ? "" : "none";
+      if (clearingActive) {
+        const automationEvent = status.automation_event || "";
+        debrisClearingBanner.textContent = automationEvent.startsWith("Clearing") || automationEvent.startsWith("Cleared")
+          ? automationEvent
+          : `Clearing ${lastClusters.length} debris cluster${lastClusters.length !== 1 ? "s" : ""}…`;
+      }
     }
 
     function drawAxes(ctx, width, height, titleX, titleY) {
@@ -1330,7 +1399,10 @@
           return;
         }
         const scanDegrees = readScanDegrees();
-        await sendJson("/api/monitoring/start", "POST", { scan_degrees: scanDegrees });
+        await sendJson("/api/monitoring/start", "POST", {
+          scan_degrees: scanDegrees,
+          auto_clear_debris: autoClearDebrisCheckbox.checked,
+        });
       } catch (error) {
         eventLog.textContent = `Start monitoring failed: ${error.message}`;
       }
@@ -1343,6 +1415,187 @@
         eventLog.textContent = `${label} failed: ${error.message}`;
       }
     }
+
+    function padInnerDims() {
+      const W = posePadCanvas.width, H = posePadCanvas.height;
+      return { W, H, innerW: W - PAD_MARGIN * 2, innerH: H - PAD_MARGIN * 2 };
+    }
+
+    function padCanvasPos(event) {
+      const rect = posePadCanvas.getBoundingClientRect();
+      const scaleX = posePadCanvas.width / rect.width;
+      const scaleY = posePadCanvas.height / rect.height;
+      const src = event.touches ? event.touches[0] : event;
+      return { x: (src.clientX - rect.left) * scaleX, y: (src.clientY - rect.top) * scaleY };
+    }
+
+    function padCanvasToAngles(x, y) {
+      const { innerW, innerH } = padInnerDims();
+      const nx = Math.max(0, Math.min(1, (x - PAD_MARGIN) / innerW));
+      const ny = Math.max(0, Math.min(1, (y - PAD_MARGIN) / innerH));
+      return {
+        yaw: Math.round((PAD_YAW_MIN + nx * (PAD_YAW_MAX - PAD_YAW_MIN)) * 10) / 10,
+        pitch: Math.round((PAD_PITCH_MAX - ny * (PAD_PITCH_MAX - PAD_PITCH_MIN)) * 10) / 10,
+      };
+    }
+
+    function padAnglesToCanvas(yaw, pitch) {
+      const { innerW, innerH } = padInnerDims();
+      return {
+        x: PAD_MARGIN + (yaw - PAD_YAW_MIN) / (PAD_YAW_MAX - PAD_YAW_MIN) * innerW,
+        y: PAD_MARGIN + (PAD_PITCH_MAX - pitch) / (PAD_PITCH_MAX - PAD_PITCH_MIN) * innerH,
+      };
+    }
+
+    function drawPosePad() {
+      const ctx = posePadCtx;
+      const { W, H, innerW, innerH } = padInnerDims();
+
+      ctx.clearRect(0, 0, W, H);
+
+      // Background fill
+      ctx.fillStyle = "rgba(244, 240, 232, 0.85)";
+      ctx.fillRect(PAD_MARGIN, PAD_MARGIN, innerW, innerH);
+
+      // Grid lines
+      ctx.strokeStyle = "rgba(109, 119, 124, 0.18)";
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 6; i++) {
+        const x = PAD_MARGIN + (i / 6) * innerW;
+        ctx.beginPath(); ctx.moveTo(x, PAD_MARGIN); ctx.lineTo(x, PAD_MARGIN + innerH); ctx.stroke();
+      }
+      for (let i = 1; i < 4; i++) {
+        const y = PAD_MARGIN + (i / 4) * innerH;
+        ctx.beginPath(); ctx.moveTo(PAD_MARGIN, y); ctx.lineTo(PAD_MARGIN + innerW, y); ctx.stroke();
+      }
+
+      // Zero yaw center line
+      const { x: zeroX } = padAnglesToCanvas(0, 0);
+      ctx.strokeStyle = "rgba(11, 122, 117, 0.3)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(zeroX, PAD_MARGIN); ctx.lineTo(zeroX, PAD_MARGIN + innerH); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Border
+      ctx.strokeStyle = "rgba(216, 205, 191, 0.9)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(PAD_MARGIN, PAD_MARGIN, innerW, innerH);
+
+      // Axis labels
+      ctx.fillStyle = "#6d777c";
+      ctx.font = "11px 'Avenir Next', 'Helvetica Neue', sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(`${PAD_YAW_MIN}°`, PAD_MARGIN + 2, PAD_MARGIN - 7);
+      ctx.textAlign = "center";
+      ctx.fillText("← Yaw →", W / 2, PAD_MARGIN - 7);
+      ctx.textAlign = "right";
+      ctx.fillText(`${PAD_YAW_MAX}°`, PAD_MARGIN + innerW, PAD_MARGIN - 7);
+      ctx.textAlign = "right";
+      ctx.fillText(`${PAD_PITCH_MAX}°`, PAD_MARGIN - 4, PAD_MARGIN + 11);
+      ctx.fillText(`${PAD_PITCH_MIN}°`, PAD_MARGIN - 4, PAD_MARGIN + innerH);
+      ctx.save();
+      ctx.translate(10, PAD_MARGIN + innerH / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = "center";
+      ctx.fillText("Pitch", 0, 0);
+      ctx.restore();
+
+      // Target crosshairs + handle
+      if (padTarget != null) {
+        const { x: tx, y: ty } = padAnglesToCanvas(padTarget.yaw, padTarget.pitch);
+        ctx.strokeStyle = padDragging ? "rgba(176, 73, 58, 0.55)" : "rgba(132, 81, 0, 0.45)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(PAD_MARGIN, ty); ctx.lineTo(PAD_MARGIN + innerW, ty); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(tx, PAD_MARGIN); ctx.lineTo(tx, PAD_MARGIN + innerH); ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = padDragging ? "rgba(176, 73, 58, 0.88)" : "rgba(185, 120, 31, 0.88)";
+        ctx.beginPath(); ctx.arc(tx, ty, 11, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(tx, ty, 11, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      // Robot current position indicator
+      if (padRobotPos != null) {
+        const { x: rx, y: ry } = padAnglesToCanvas(padRobotPos.yaw, padRobotPos.pitch);
+        ctx.fillStyle = "rgba(11, 122, 117, 0.18)";
+        ctx.beginPath(); ctx.arc(rx, ry, 15, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "rgba(11, 122, 117, 0.7)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(rx, ry, 15, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = "#085d59";
+        ctx.font = "bold 9px 'Avenir Next', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("NOW", rx, ry + 3);
+      }
+    }
+
+    async function sendPadTarget() {
+      if (padTarget == null || !padEnabled) return;
+      padStatusLabel.textContent = "Sending\u2026";
+      try {
+        await sendJson("/api/robot/move-to", "POST", { yaw_deg: padTarget.yaw, pitch_deg: padTarget.pitch });
+        padStatusLabel.textContent = "Sent";
+        window.setTimeout(() => { padStatusLabel.textContent = ""; }, 1400);
+      } catch (err) {
+        padStatusLabel.textContent = "Failed";
+        showAlarm({ title: "Move To failed", detail: err.message, tone: "danger" });
+      }
+    }
+
+    posePadCanvas.addEventListener("mousedown", (e) => {
+      if (!padEnabled) return;
+      e.preventDefault();
+      padDragging = true;
+      padTarget = padCanvasToAngles(...Object.values(padCanvasPos(e)));
+      padTargetYawLabel.textContent = `${padTarget.yaw.toFixed(1)}\xb0`;
+      padTargetPitchLabel.textContent = `${padTarget.pitch.toFixed(1)}\xb0`;
+      drawPosePad();
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!padDragging) return;
+      padTarget = padCanvasToAngles(...Object.values(padCanvasPos(e)));
+      padTargetYawLabel.textContent = `${padTarget.yaw.toFixed(1)}\xb0`;
+      padTargetPitchLabel.textContent = `${padTarget.pitch.toFixed(1)}\xb0`;
+      drawPosePad();
+    });
+
+    document.addEventListener("mouseup", () => {
+      if (!padDragging) return;
+      padDragging = false;
+      drawPosePad();
+      sendPadTarget();
+    });
+
+    posePadCanvas.addEventListener("touchstart", (e) => {
+      if (!padEnabled) return;
+      e.preventDefault();
+      padDragging = true;
+      padTarget = padCanvasToAngles(...Object.values(padCanvasPos(e)));
+      padTargetYawLabel.textContent = `${padTarget.yaw.toFixed(1)}\xb0`;
+      padTargetPitchLabel.textContent = `${padTarget.pitch.toFixed(1)}\xb0`;
+      drawPosePad();
+    }, { passive: false });
+
+    posePadCanvas.addEventListener("touchmove", (e) => {
+      if (!padDragging) return;
+      e.preventDefault();
+      padTarget = padCanvasToAngles(...Object.values(padCanvasPos(e)));
+      padTargetYawLabel.textContent = `${padTarget.yaw.toFixed(1)}\xb0`;
+      padTargetPitchLabel.textContent = `${padTarget.pitch.toFixed(1)}\xb0`;
+      drawPosePad();
+    }, { passive: false });
+
+    posePadCanvas.addEventListener("touchend", () => {
+      if (!padDragging) return;
+      padDragging = false;
+      drawPosePad();
+      sendPadTarget();
+    });
 
     async function deleteBaseline() {
       const confirmed = await askConfirm({
@@ -1390,10 +1643,14 @@
     hardStopButton.addEventListener("click", () => sendSimpleCommand("/api/robot/hard-stop", "Hard stop"));
     releaseButton.addEventListener("click", () => sendSimpleCommand("/api/robot/release-motors", "Release motors"));
     zeroButton.addEventListener("click", () => sendSimpleCommand("/api/robot/zero-turret", "Zero turret"));
+    autoClearDebrisCheckbox.addEventListener("change", () => {
+      sendJson("/api/monitoring/set-auto-clear", "POST", { enabled: autoClearDebrisCheckbox.checked }).catch(() => {});
+    });
     importBaselineButton.addEventListener("click", openBaselineImportPicker);
     importBaselineFileInput.addEventListener("change", importBaselineFile);
     deleteBaselineButton.addEventListener("click", deleteBaseline);
 
+    drawPosePad();
     renderLivePlots([], "raw", requestedPlotMode, false);
     refreshStatus();
     refreshLivePoints();

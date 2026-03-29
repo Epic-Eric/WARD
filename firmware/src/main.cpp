@@ -9,10 +9,10 @@
 namespace Config {
 constexpr unsigned long kSerialBaudRate = 115200;
 
-constexpr char kWifiSsid[] = "Eric’s iPhone";
-constexpr char kWifiPassword[] = "88888888";
-constexpr char kServerHost[] = "Haysons-MacBook-Pro.local";
-const IPAddress kServerFallbackIp(172, 20, 10, 4);
+constexpr char kWifiSsid[] = WIFI_SSID;
+constexpr char kWifiPassword[] = WIFI_PASSWORD;
+constexpr char kServerHost[] = SERVER_HOST;
+const IPAddress kServerFallbackIp(SERVER_FALLBACK_IP);
 constexpr uint16_t kServerPort = 9000;
 
 constexpr unsigned long kWifiRetryDelayMs = 1500;
@@ -52,15 +52,39 @@ constexpr float kYawStartingAngleDeg = 0.0f;
 constexpr int kYawMotorSpeedRpm = 20;
 constexpr int kPitchMotorSpeedRpm = 20;
 
-constexpr float kPitchSweepStartDeg = -30.0f;
-constexpr float kPitchSweepEndDeg = 0.0f;
+constexpr float kPitchSweepStartDeg = -55.0f;
+constexpr float kPitchSweepEndDeg = -25.0f;
 constexpr float kYawSweepStartDeg = 0.0f;
 constexpr float kDefaultScanDegrees = 20.0f;
 constexpr float kMaxScanDegrees = 360.0f;
 constexpr float kYawSweepStepDeg = 1.0f;
 
 constexpr size_t kCommandBufferSize = 48;
+
+// Sensor mounting geometry (relative to pitch axis intersection)
+constexpr float kSensorAboveAxisMm = 35.0f;   // sensor is 35 mm above the pitch axis
+constexpr float kSensorFaceOffsetMm = 34.0f;  // sensor face is 34 mm forward of the axis
 }  // namespace Config
+
+// Convert a raw VL53L1X reading to the equivalent distance from the pitch-axis origin.
+// The sensor face sits kSensorFaceOffsetMm ahead of the axis and kSensorAboveAxisMm above it.
+// Step 1 – Pythagorean correction for the height offset: hyp = sqrt(d² + h²)
+// Step 2 – Add the forward face offset: R_axial = hyp + kSensorFaceOffsetMm
+float toAxialDistanceMm(float rawMm) {
+    const float hyp = sqrtf(rawMm * rawMm +
+                            Config::kSensorAboveAxisMm * Config::kSensorAboveAxisMm);
+    return hyp + Config::kSensorFaceOffsetMm;
+}
+
+// Correct for sensor being kSensorAboveAxisMm above the pitch axis (parallax).
+// The motor angle aims at angle theta, but the sensor — offset above the axis — effectively
+// reads a point that is slightly lower.  True pitch: theta' = theta - atan(t / R_raw)
+// where R_raw is the raw (untransformed) sensor reading and t = kSensorAboveAxisMm.
+float toTruePitchDeg(float motorPitchDeg, float rawMm) {
+    if (rawMm < 1.0f) return motorPitchDeg;
+    const float correctionRad = atanf(Config::kSensorAboveAxisMm / rawMm);
+    return motorPitchDeg - correctionRad / DEG_TO_RAD;
+}
 
 enum class RobotCommand {
     None,
@@ -69,6 +93,7 @@ enum class RobotCommand {
     HardStop,
     ReleaseMotors,
     ZeroTurret,
+    MoveTo,
 };
 
 enum class ScanOutcome {
@@ -258,6 +283,8 @@ public:
           lastServerConnectAttemptMs_(0),
           lastHeartbeatSentMs_(0),
           requestedScanDegrees_(Config::kDefaultScanDegrees),
+          requestedMoveYawDeg_(0.0f),
+          requestedMovePitchDeg_(0.0f),
           commandLength_(0) {
         commandBuffer_[0] = '\0';
     }
@@ -334,6 +361,25 @@ public:
                     return RobotCommand::ZeroTurret;
                 }
 
+                if (strncmp(commandBuffer_, "MOVE_TO,", 8) == 0) {
+                    const char* rest = commandBuffer_ + 8;
+                    const char* comma = strchr(rest, ',');
+                    if (comma != nullptr) {
+                        const float parsedYaw = atof(rest);
+                        const float parsedPitch = atof(comma + 1);
+                        requestedMoveYawDeg_ = parsedYaw;
+                        requestedMovePitchDeg_ = parsedPitch;
+                        Serial.print("Received command MOVE_TO yaw=");
+                        Serial.print(parsedYaw, 2);
+                        Serial.print(" pitch=");
+                        Serial.println(parsedPitch, 2);
+                        return RobotCommand::MoveTo;
+                    }
+                    Serial.print("Ignoring invalid MOVE_TO command: ");
+                    Serial.println(commandBuffer_);
+                    continue;
+                }
+
                 if (commandBuffer_[0] != '\0') {
                     Serial.print("Ignoring unknown command: ");
                     Serial.println(commandBuffer_);
@@ -354,6 +400,8 @@ public:
     }
 
     float requestedScanDegrees() const { return requestedScanDegrees_; }
+    float requestedMoveYawDeg() const { return requestedMoveYawDeg_; }
+    float requestedMovePitchDeg() const { return requestedMovePitchDeg_; }
 
     void sendHeartbeatIfDue(const char* state, float yawDeg, float pitchDeg) {
         if (!ensureServerConnection()) {
@@ -635,6 +683,8 @@ private:
     unsigned long lastServerConnectAttemptMs_;
     unsigned long lastHeartbeatSentMs_;
     float requestedScanDegrees_;
+    float requestedMoveYawDeg_;
+    float requestedMovePitchDeg_;
     WiFiClient client_;
     char commandBuffer_[Config::kCommandBufferSize];
     size_t commandLength_;
@@ -761,15 +811,18 @@ public:
                     continue;
                 }
 
+                const float rawMm = static_cast<float>(distanceMm);
+                const float axialMm = toAxialDistanceMm(rawMm);
+                const float truePitchDeg = toTruePitchDeg(pitchAxis_.currentAngleDeg(), rawMm);
+
                 ScanPoint point{};
                 point.frameId = frameId;
                 point.pointIndex = pointIndex++;
                 point.yawDeg = yawAxis_.currentAngleDeg();
-                point.pitchDeg = pitchAxis_.currentAngleDeg();
-                point.distanceMm = distanceMm;
+                point.pitchDeg = truePitchDeg;
+                point.distanceMm = static_cast<uint16_t>(lroundf(axialMm));
                 point.positionMm =
-                    sphericalToCartesian(static_cast<float>(distanceMm), point.yawDeg,
-                                         point.pitchDeg);
+                    sphericalToCartesian(axialMm, point.yawDeg, truePitchDeg);
 
                 robotLink_.sendSensorStatus("RANGE_VALID");
                 robotLink_.sendPoint(point, networkEnabled);
@@ -911,6 +964,15 @@ void loop() {
         kRobotLink.sendState("ZEROED");
         kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
         Serial.println("Turret released and zeroed while idle.");
+    } else if (command == RobotCommand::MoveTo) {
+        kYawAxis.moveTo(kRobotLink.requestedMoveYawDeg());
+        kPitchAxis.moveTo(kRobotLink.requestedMovePitchDeg());
+        kRobotLink.sendState("IDLE");
+        kRobotLink.sendPose(kYawAxis.currentAngleDeg(), kPitchAxis.currentAngleDeg());
+        Serial.print("Moved to yaw=");
+        Serial.print(kYawAxis.currentAngleDeg(), 2);
+        Serial.print(" pitch=");
+        Serial.println(kPitchAxis.currentAngleDeg(), 2);
     } else if (command == RobotCommand::StopScan || command == RobotCommand::HardStop) {
         Serial.println("Robot is idle. Stop command ignored.");
     }

@@ -22,6 +22,7 @@ export default function CommandBar({
   status,
   scanDegrees,
   setScanDegrees,
+  autoClearDebris,
   onAlarm,
   onCommandMessage,
   requestConfirm,
@@ -29,6 +30,7 @@ export default function CommandBar({
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [baselineAfterScan, setBaselineAfterScan] = useState(false);
+  const prevClearingSeqRef = useRef(status?.clearing_debris_sequence ?? 0);
   const robotConnected = Boolean(status?.robot_connected);
   const scanInProgress = Boolean(status?.scan_in_progress);
   const previousScanInProgressRef = useRef(scanInProgress);
@@ -62,6 +64,19 @@ export default function CommandBar({
     run("Save scan as baseline", saveBaseline);
   }, [baselineAfterScan, onCommandMessage, scanInProgress, status?.last_capture, status?.last_scan_result?.capture_path]);
 
+  useEffect(() => {
+    const seq = status?.clearing_debris_sequence ?? 0;
+    if (seq > prevClearingSeqRef.current) {
+      prevClearingSeqRef.current = seq;
+      const count = (status?.last_debris_clusters ?? []).length;
+      onAlarm?.({
+        title: `Clearing ${count} debris cluster${count !== 1 ? "s" : ""}`,
+        detail: "Robot is autonomously moving to each debris centroid.",
+        tone: "warn",
+      });
+    }
+  }, [status?.clearing_debris_sequence, status?.last_debris_clusters, onAlarm]);
+
   async function run(label, action) {
     try {
       await action();
@@ -88,7 +103,7 @@ export default function CommandBar({
       });
       return;
     }
-    return run("Start monitoring", () => startMonitoring(scanDegreesValue));
+    return run("Start monitoring", () => startMonitoring(scanDegreesValue, autoClearDebris));
   }
 
   async function handleStart() {

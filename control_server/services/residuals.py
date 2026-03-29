@@ -45,7 +45,7 @@ def write_residual_capture(
     baseline_path: Path,
     current_path: Path,
     tolerance_mm: float = DEFAULT_RESIDUAL_TOLERANCE_MM,
-) -> tuple[Path, str, int]:
+) -> tuple[Path, str, int, list[dict[str, Any]]]:
     baseline_points = load_pose_point_map(baseline_path)
     current_points = load_pose_point_map(current_path)
     current_samples = [dict(sample) for sample in current_points.values()]
@@ -67,6 +67,7 @@ def write_residual_capture(
     baseline_surface_map = point_map_from_samples(baseline_surface)
     residual_path, writer, file_obj = open_capture_file(output_dir, "residual")
     written_points = 0
+    collected_residuals: list[dict[str, float | int]] = []
     try:
         for current in current_samples:
             key = pose_key(float(current["yaw_deg"]), float(current["pitch_deg"]))
@@ -92,13 +93,25 @@ def write_residual_capture(
                     format_optional_float(current["z_mm"]),
                 ]
             )
+            collected_residuals.append({
+                "frame_id": int(current["frame_id"]),
+                "point_index": int(current["point_index"]),
+                "yaw_deg": float(current["yaw_deg"]),
+                "pitch_deg": float(current["pitch_deg"]),
+                "distance_mm": current_distance_mm,
+                "x_mm": float(current["x_mm"]),
+                "y_mm": float(current["y_mm"]),
+                "z_mm": float(current["z_mm"]),
+                "occlusion_distance_mm": occlusion_distance_mm,
+            })
             written_points += 1
     finally:
         file_obj.flush()
         file_obj.close()
 
+    debris_clusters, _ = cluster_residual_samples(collected_residuals, tolerance_mm)
     summary = f"Residual saved with {written_points} foreground rays from the current scan."
-    return residual_path, summary, written_points
+    return residual_path, summary, written_points, debris_clusters
 
 
 def cluster_radius_mm(sample: dict[str, float | int]) -> float:
@@ -393,9 +406,13 @@ def cluster_residual_samples(
                 f"{round(centroid_z_mm / 100.0)}"
             )
 
+            centroid_yaw_deg = round(math.degrees(math.atan2(centroid_y_mm, centroid_x_mm)), 2)
+            centroid_pitch_deg = round(math.degrees(math.atan2(centroid_z_mm, math.hypot(centroid_x_mm, centroid_y_mm))), 2)
             valid_clusters.append(
                 {
                     "cluster_id": cluster_id,
+                    "centroid_yaw_deg": centroid_yaw_deg,
+                    "centroid_pitch_deg": centroid_pitch_deg,
                     "score": score_debris_cluster(
                         point_count,
                         mean_occlusion_mm,

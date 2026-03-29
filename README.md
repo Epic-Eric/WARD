@@ -37,8 +37,16 @@ WARD is a debris-removal robot project for **ESC204 Praxis 3** at the **Universi
 
 - `firmware/src/main.cpp`
   Robot firmware, Wi-Fi, turret motion, sensor handling, and robot command protocol.
+- `firmware/network.env` *(gitignored)*
+  Wi-Fi credentials and server host/IP for your machine. Copy from `network.env.example`.
+- `firmware/network.env.example`
+  Template for `network.env`.
+- `firmware/load_env.py`
+  PlatformIO pre-build script that injects `network.env` values as C defines.
 - `firmware/platformio.ini`
   PlatformIO environment and upload configuration.
+- `scripts/discover_host.sh`
+  Auto-detects this Mac's LAN IP and hostname and writes them into `firmware/network.env`.
 - `control_server/point_cloud_server.py`
   Thin FastAPI bootstrap.
 - `control_server/services/`
@@ -73,6 +81,38 @@ Recommended day-to-day flow:
 - Python 3
 - Node.js and `npm`
 - The robot and computer on the same Wi-Fi network
+
+## Network Configuration
+
+Wi-Fi credentials and the server host address are stored in `firmware/network.env`, which is **not committed to git** (it contains passwords). A template is provided at `firmware/network.env.example`.
+
+### First-time setup
+
+```bash
+cp firmware/network.env.example firmware/network.env
+# Edit firmware/network.env with your Wi-Fi SSID, password, and Mac's IP/hostname
+```
+
+`firmware/network.env` format:
+
+```
+WIFI_SSID=YourNetworkName
+WIFI_PASSWORD=YourPassword
+SERVER_HOST=Your-Mac-Hostname.local
+SERVER_FALLBACK_IP=192.168.1.100
+```
+
+`load_env.py` (a PlatformIO pre-build script) reads this file and injects the values as C defines at compile time, so no credentials are hardcoded in source.
+
+### Auto-discovering your Mac's host address
+
+Run this before flashing whenever you switch networks:
+
+```bash
+bash scripts/discover_host.sh
+```
+
+This detects your Mac's current LAN IP and mDNS hostname and writes them into `firmware/network.env`. Use `--dry-run` to preview without writing.
 
 ## How To Run
 

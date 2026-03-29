@@ -152,6 +152,8 @@ summary {
 .overlay-column.left {
   left: 16px;
   transform: translateX(calc(-100% - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .overlay-column.right {
@@ -165,6 +167,8 @@ summary {
   transform: translateX(0);
   opacity: 1;
   pointer-events: auto;
+  z-index: 7;
+  bottom: 0;
 }
 
 .overlay-stack {
@@ -585,6 +589,21 @@ p {
   color: var(--ink);
 }
 
+.command-field--toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.command-field--toggle input[type="checkbox"] {
+  width: auto;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .command-bar button {
   border: 0;
   border-radius: 999px;
@@ -643,6 +662,61 @@ p {
   width: 100%;
   justify-content: flex-start;
   text-align: left;
+}
+
+.cluster-context-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.cluster-context-menu {
+  position: fixed;
+  z-index: 51;
+  min-width: 190px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 251, 244, 0.97);
+  box-shadow: 0 8px 24px rgba(77, 57, 31, 0.14);
+  backdrop-filter: blur(14px);
+  display: grid;
+  gap: 6px;
+  transform: translate(4px, 4px);
+}
+
+.cluster-context-menu__header {
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 2px;
+}
+
+.cluster-context-menu__id {
+  font-size: 0.72rem;
+  font-family: monospace;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cluster-context-menu__header span:last-child {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.cluster-context-menu__shoot {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.cluster-context-menu__shoot:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .command-message {
@@ -925,6 +999,10 @@ p {
     top: 12px;
     bottom: 72px;
     width: min(320px, calc(100vw - 24px));
+  }
+
+  .overlay-column.open {
+    bottom: 0;
   }
 
   .overlay-column.left {
