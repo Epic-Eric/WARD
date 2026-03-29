@@ -17,6 +17,11 @@ from .config import (
     CLUSTER_RADIUS_DISTANCE_SCALE,
     CLUSTER_RADIUS_MAX_MM,
     CLUSTER_RADIUS_MIN_MM,
+    CLUSTER_REMERGE_MAX_GAP_MM,
+    CLUSTER_REMERGE_MAX_MEAN_OCCLUSION_DELTA_MM,
+    CLUSTER_REMERGE_MAX_PITCH_GAP_DEG,
+    CLUSTER_REMERGE_MAX_YAW_GAP_DEG,
+    CLUSTER_REMERGE_MIN_LINKS,
     CLUSTER_SPLIT_MAX_PITCH_GAP_DEG,
     CLUSTER_SPLIT_MAX_RADIUS_MM,
     CLUSTER_SPLIT_MAX_YAW_GAP_DEG,
@@ -219,6 +224,138 @@ def split_member_indexes(
     return filtered_components or [member_indexes]
 
 
+def angle_range_gap_deg(
+    left_min_deg: float,
+    left_max_deg: float,
+    right_min_deg: float,
+    right_max_deg: float,
+) -> float:
+    if left_max_deg < right_min_deg:
+        return right_min_deg - left_max_deg
+    if right_max_deg < left_min_deg:
+        return left_min_deg - right_max_deg
+    return 0.0
+
+
+def bbox_gap_mm(left_bbox: dict[str, float], right_bbox: dict[str, float]) -> float:
+    gap_x = max(0.0, left_bbox["min_x_mm"] - right_bbox["max_x_mm"], right_bbox["min_x_mm"] - left_bbox["max_x_mm"])
+    gap_y = max(0.0, left_bbox["min_y_mm"] - right_bbox["max_y_mm"], right_bbox["min_y_mm"] - left_bbox["max_y_mm"])
+    gap_z = max(0.0, left_bbox["min_z_mm"] - right_bbox["max_z_mm"], right_bbox["min_z_mm"] - left_bbox["max_z_mm"])
+    return math.sqrt(gap_x * gap_x + gap_y * gap_y + gap_z * gap_z)
+
+
+def describe_member_group(
+    residual_samples: list[dict[str, float | int]],
+    member_indexes: list[int],
+) -> dict[str, Any]:
+    samples = [residual_samples[index] for index in member_indexes]
+    occlusions = [float(sample.get("occlusion_distance_mm", 0.0)) for sample in samples]
+    centroid_x_mm = sum(float(sample["x_mm"]) for sample in samples) / len(samples)
+    centroid_y_mm = sum(float(sample["y_mm"]) for sample in samples) / len(samples)
+    centroid_z_mm = sum(float(sample["z_mm"]) for sample in samples) / len(samples)
+    yaw_values = [float(sample["yaw_deg"]) for sample in samples]
+    pitch_values = [float(sample["pitch_deg"]) for sample in samples]
+    unique_yaws = {round(yaw_deg, 2) for yaw_deg in yaw_values}
+    unique_pitches = {round(pitch_deg, 2) for pitch_deg in pitch_values}
+    return {
+        "member_indexes": list(member_indexes),
+        "bbox": bbox_from_samples(samples),
+        "mean_occlusion_mm": sum(occlusions) / len(occlusions),
+        "centroid_mm": (centroid_x_mm, centroid_y_mm, centroid_z_mm),
+        "min_yaw_deg": min(yaw_values),
+        "max_yaw_deg": max(yaw_values),
+        "min_pitch_deg": min(pitch_values),
+        "max_pitch_deg": max(pitch_values),
+        "occupancy_cells": max(1, len(unique_yaws) * len(unique_pitches)),
+    }
+
+
+def split_groups_should_merge(
+    residual_samples: list[dict[str, float | int]],
+    left_group: dict[str, Any],
+    right_group: dict[str, Any],
+) -> bool:
+    if bbox_gap_mm(left_group["bbox"], right_group["bbox"]) > CLUSTER_REMERGE_MAX_GAP_MM:
+        return False
+    if angle_range_gap_deg(
+        left_group["min_yaw_deg"],
+        left_group["max_yaw_deg"],
+        right_group["min_yaw_deg"],
+        right_group["max_yaw_deg"],
+    ) > CLUSTER_REMERGE_MAX_YAW_GAP_DEG:
+        return False
+    if angle_range_gap_deg(
+        left_group["min_pitch_deg"],
+        left_group["max_pitch_deg"],
+        right_group["min_pitch_deg"],
+        right_group["max_pitch_deg"],
+    ) > CLUSTER_REMERGE_MAX_PITCH_GAP_DEG:
+        return False
+    if abs(left_group["mean_occlusion_mm"] - right_group["mean_occlusion_mm"]) > CLUSTER_REMERGE_MAX_MEAN_OCCLUSION_DELTA_MM:
+        return False
+
+    left_supported_indexes: set[int] = set()
+    right_supported_indexes: set[int] = set()
+
+    for left_index in left_group["member_indexes"]:
+        left_sample = residual_samples[left_index]
+        for right_index in right_group["member_indexes"]:
+            right_sample = residual_samples[right_index]
+            pair_radius_mm = max(cluster_radius_mm(left_sample), cluster_radius_mm(right_sample))
+            if not pair_is_cluster_compatible(left_sample, right_sample, pair_radius_mm):
+                continue
+            left_supported_indexes.add(left_index)
+            right_supported_indexes.add(right_index)
+            if (
+                len(left_supported_indexes) >= CLUSTER_REMERGE_MIN_LINKS
+                and len(right_supported_indexes) >= CLUSTER_REMERGE_MIN_LINKS
+            ):
+                return True
+
+    return False
+
+
+def merge_split_member_groups(
+    residual_samples: list[dict[str, float | int]],
+    member_groups: list[list[int]],
+) -> list[list[list[int]]]:
+    if len(member_groups) < 2:
+        return [[list(member_group)] for member_group in member_groups]
+
+    group_descriptors = [
+        describe_member_group(residual_samples, member_group)
+        for member_group in member_groups
+    ]
+    merged_components: list[list[list[int]]] = []
+    visited: set[int] = set()
+
+    for index in range(len(group_descriptors)):
+        if index in visited:
+            continue
+
+        stack = [index]
+        component_indexes: list[int] = []
+        visited.add(index)
+
+        while stack:
+            current_index = stack.pop()
+            component_indexes.append(current_index)
+            current_group = group_descriptors[current_index]
+
+            for candidate_index in range(len(group_descriptors)):
+                if candidate_index in visited or candidate_index == current_index:
+                    continue
+                candidate_group = group_descriptors[candidate_index]
+                if not split_groups_should_merge(residual_samples, current_group, candidate_group):
+                    continue
+                visited.add(candidate_index)
+                stack.append(candidate_index)
+
+        merged_components.append([member_groups[group_index] for group_index in component_indexes])
+
+    return merged_components
+
+
 def bbox_from_samples(samples: list[dict[str, float | int]]) -> dict[str, float]:
     xs = [float(sample["x_mm"]) for sample in samples]
     ys = [float(sample["y_mm"]) for sample in samples]
@@ -272,6 +409,78 @@ def score_debris_cluster(
         * 100.0,
         1,
     )
+
+
+def build_debris_cluster_candidate(
+    residual_samples: list[dict[str, float | int]],
+    member_indexes: list[int],
+    tolerance_mm: float,
+    *,
+    occupancy_denominator: int | None = None,
+) -> dict[str, Any] | None:
+    samples = [residual_samples[index] for index in member_indexes]
+    if len(samples) < DEBRIS_MIN_POINTS:
+        return None
+
+    unique_yaws = {round(float(sample["yaw_deg"]), 2) for sample in samples}
+    unique_pitches = {round(float(sample["pitch_deg"]), 2) for sample in samples}
+    if len(unique_yaws) < DEBRIS_MIN_UNIQUE_YAWS or len(unique_pitches) < DEBRIS_MIN_UNIQUE_PITCHES:
+        return None
+
+    occlusions = [float(sample.get("occlusion_distance_mm", 0.0)) for sample in samples]
+    mean_occlusion_mm = sum(occlusions) / len(occlusions)
+    max_occlusion_mm = max(occlusions)
+    min_max_occlusion_mm = max(DEBRIS_MIN_MAX_OCCLUSION_MM, tolerance_mm + 5.0)
+    min_mean_occlusion_mm = max(DEBRIS_MIN_MEAN_OCCLUSION_MM, tolerance_mm)
+    if max_occlusion_mm < min_max_occlusion_mm or mean_occlusion_mm < min_mean_occlusion_mm:
+        return None
+
+    bbox = bbox_from_samples(samples)
+    if bbox["diagonal_mm"] > DEBRIS_MAX_DIAGONAL_MM:
+        return None
+
+    point_count = len(samples)
+    occupancy_ratio = point_count / max(
+        1,
+        occupancy_denominator
+        if occupancy_denominator is not None and occupancy_denominator > 0
+        else len(unique_yaws) * len(unique_pitches),
+    )
+    if occupancy_ratio < DEBRIS_MIN_OCCUPANCY_RATIO:
+        return None
+
+    centroid_x_mm = sum(float(sample["x_mm"]) for sample in samples) / point_count
+    centroid_y_mm = sum(float(sample["y_mm"]) for sample in samples) / point_count
+    centroid_z_mm = sum(float(sample["z_mm"]) for sample in samples) / point_count
+    centroid_yaw_deg = round(math.degrees(math.atan2(centroid_y_mm, centroid_x_mm)), 2)
+    centroid_pitch_deg = round(
+        math.degrees(math.atan2(centroid_z_mm, math.hypot(centroid_x_mm, centroid_y_mm))),
+        2,
+    )
+    return {
+        "member_indexes": list(member_indexes),
+        "centroid_yaw_deg": centroid_yaw_deg,
+        "centroid_pitch_deg": centroid_pitch_deg,
+        "score": score_debris_cluster(
+            point_count,
+            mean_occlusion_mm,
+            max_occlusion_mm,
+            occupancy_ratio,
+            float(bbox["diagonal_mm"]),
+        ),
+        "point_count": point_count,
+        "mean_occlusion_mm": round(mean_occlusion_mm, 1),
+        "max_occlusion_mm": round(max_occlusion_mm, 1),
+        "unique_yaw_count": len(unique_yaws),
+        "unique_pitch_count": len(unique_pitches),
+        "occupancy_ratio": round(occupancy_ratio, 3),
+        "centroid_mm": [
+            round(centroid_x_mm, 1),
+            round(centroid_y_mm, 1),
+            round(centroid_z_mm, 1),
+        ],
+        "bbox": {key: round(value, 1) for key, value in bbox.items()},
+    }
 
 
 def cluster_residual_samples(
@@ -367,75 +576,50 @@ def cluster_residual_samples(
 
     valid_clusters: list[dict[str, Any]] = []
     sample_to_cluster: dict[int, str] = {}
-    min_max_occlusion_mm = max(DEBRIS_MIN_MAX_OCCLUSION_MM, tolerance_mm + 5.0)
-    min_mean_occlusion_mm = max(DEBRIS_MIN_MEAN_OCCLUSION_MM, tolerance_mm)
 
     for original_member_indexes in cluster_members.values():
-        member_groups = split_member_indexes(residual_samples, original_member_indexes)
-        for member_indexes in member_groups:
-            samples = [residual_samples[index] for index in member_indexes]
-            if len(samples) < DEBRIS_MIN_POINTS:
+        split_groups = split_member_indexes(residual_samples, original_member_indexes)
+        merged_group_components = merge_split_member_groups(residual_samples, split_groups)
+        for group_component in merged_group_components:
+            if len(group_component) == 1:
+                candidate = build_debris_cluster_candidate(
+                    residual_samples,
+                    group_component[0],
+                    tolerance_mm,
+                )
+                if candidate is not None:
+                    valid_clusters.append(candidate)
                 continue
 
-            unique_yaws = {round(float(sample["yaw_deg"]), 2) for sample in samples}
-            unique_pitches = {round(float(sample["pitch_deg"]), 2) for sample in samples}
-            if len(unique_yaws) < DEBRIS_MIN_UNIQUE_YAWS or len(unique_pitches) < DEBRIS_MIN_UNIQUE_PITCHES:
-                continue
-
-            occlusions = [float(sample.get("occlusion_distance_mm", 0.0)) for sample in samples]
-            mean_occlusion_mm = sum(occlusions) / len(occlusions)
-            max_occlusion_mm = max(occlusions)
-            if max_occlusion_mm < min_max_occlusion_mm or mean_occlusion_mm < min_mean_occlusion_mm:
-                continue
-
-            bbox = bbox_from_samples(samples)
-            if bbox["diagonal_mm"] > DEBRIS_MAX_DIAGONAL_MM:
-                continue
-
-            point_count = len(samples)
-            occupancy_ratio = point_count / max(1, len(unique_yaws) * len(unique_pitches))
-            if occupancy_ratio < DEBRIS_MIN_OCCUPANCY_RATIO:
-                continue
-            centroid_x_mm = sum(float(sample["x_mm"]) for sample in samples) / point_count
-            centroid_y_mm = sum(float(sample["y_mm"]) for sample in samples) / point_count
-            centroid_z_mm = sum(float(sample["z_mm"]) for sample in samples) / point_count
-            cluster_id = (
-                f"debris-"
-                f"{round(centroid_x_mm / 100.0)}-"
-                f"{round(centroid_y_mm / 100.0)}-"
-                f"{round(centroid_z_mm / 100.0)}"
-            )
-
-            centroid_yaw_deg = round(math.degrees(math.atan2(centroid_y_mm, centroid_x_mm)), 2)
-            centroid_pitch_deg = round(math.degrees(math.atan2(centroid_z_mm, math.hypot(centroid_x_mm, centroid_y_mm))), 2)
-            valid_clusters.append(
+            merged_member_indexes = sorted(
                 {
-                    "cluster_id": cluster_id,
-                    "centroid_yaw_deg": centroid_yaw_deg,
-                    "centroid_pitch_deg": centroid_pitch_deg,
-                    "score": score_debris_cluster(
-                        point_count,
-                        mean_occlusion_mm,
-                        max_occlusion_mm,
-                        occupancy_ratio,
-                        float(bbox["diagonal_mm"]),
-                    ),
-                    "point_count": point_count,
-                    "mean_occlusion_mm": round(mean_occlusion_mm, 1),
-                    "max_occlusion_mm": round(max_occlusion_mm, 1),
-                    "unique_yaw_count": len(unique_yaws),
-                    "unique_pitch_count": len(unique_pitches),
-                    "occupancy_ratio": round(occupancy_ratio, 3),
-                    "centroid_mm": [
-                        round(centroid_x_mm, 1),
-                        round(centroid_y_mm, 1),
-                        round(centroid_z_mm, 1),
-                    ],
-                    "bbox": {key: round(value, 1) for key, value in bbox.items()},
+                    sample_index
+                    for member_group in group_component
+                    for sample_index in member_group
                 }
             )
-            for sample_index in member_indexes:
-                sample_to_cluster[sample_index] = cluster_id
+            merged_occupancy_denominator = sum(
+                describe_member_group(residual_samples, member_group)["occupancy_cells"]
+                for member_group in group_component
+            )
+            merged_candidate = build_debris_cluster_candidate(
+                residual_samples,
+                merged_member_indexes,
+                tolerance_mm,
+                occupancy_denominator=merged_occupancy_denominator,
+            )
+            if merged_candidate is not None:
+                valid_clusters.append(merged_candidate)
+                continue
+
+            for member_indexes in group_component:
+                candidate = build_debris_cluster_candidate(
+                    residual_samples,
+                    member_indexes,
+                    tolerance_mm,
+                )
+                if candidate is not None:
+                    valid_clusters.append(candidate)
 
     valid_clusters.sort(
         key=lambda cluster: (
@@ -444,4 +628,15 @@ def cluster_residual_samples(
             -float(cluster["max_occlusion_mm"]),
         )
     )
+    for cluster_index, cluster in enumerate(valid_clusters, start=1):
+        centroid_x_mm, centroid_y_mm, centroid_z_mm = cluster["centroid_mm"]
+        cluster_id = (
+            f"debris-{cluster_index:03d}-"
+            f"{round(float(centroid_x_mm) / 100.0)}-"
+            f"{round(float(centroid_y_mm) / 100.0)}-"
+            f"{round(float(centroid_z_mm) / 100.0)}"
+        )
+        cluster["cluster_id"] = cluster_id
+        for sample_index in cluster.pop("member_indexes"):
+            sample_to_cluster[sample_index] = cluster_id
     return valid_clusters, sample_to_cluster

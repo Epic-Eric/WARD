@@ -66,26 +66,6 @@ constexpr float kSensorAboveAxisMm = 35.0f;   // sensor is 35 mm above the pitch
 constexpr float kSensorFaceOffsetMm = 34.0f;  // sensor face is 34 mm forward of the axis
 }  // namespace Config
 
-// Convert a raw VL53L1X reading to the equivalent distance from the pitch-axis origin.
-// The sensor face sits kSensorFaceOffsetMm ahead of the axis and kSensorAboveAxisMm above it.
-// Step 1 – Pythagorean correction for the height offset: hyp = sqrt(d² + h²)
-// Step 2 – Add the forward face offset: R_axial = hyp + kSensorFaceOffsetMm
-float toAxialDistanceMm(float rawMm) {
-    const float hyp = sqrtf(rawMm * rawMm +
-                            Config::kSensorAboveAxisMm * Config::kSensorAboveAxisMm);
-    return hyp + Config::kSensorFaceOffsetMm;
-}
-
-// Correct for sensor being kSensorAboveAxisMm above the pitch axis (parallax).
-// The motor angle aims at angle theta, but the sensor — offset above the axis — effectively
-// reads a point that is slightly lower.  True pitch: theta' = theta - atan(t / R_raw)
-// where R_raw is the raw (untransformed) sensor reading and t = kSensorAboveAxisMm.
-float toTruePitchDeg(float motorPitchDeg, float rawMm) {
-    if (rawMm < 1.0f) return motorPitchDeg;
-    const float correctionRad = atanf(Config::kSensorAboveAxisMm / rawMm);
-    return motorPitchDeg - correctionRad / DEG_TO_RAD;
-}
-
 enum class RobotCommand {
     None,
     StartScan,
@@ -109,6 +89,39 @@ struct Point3D {
     float y;
     float z;
 };
+
+// Reconstruct the hit in the pitch plane from the exact sensor origin.
+// The sensor origin sits forward and above the pitch axis, so the point seen by the beam is:
+//   x = f + d*cos(theta_motor)
+//   z = h + d*sin(theta_motor)
+// where f is the forward offset, h is the vertical offset, and d is the raw range.
+// Deriving distance and pitch from this point keeps the range and angle self-consistent.
+Point3D scanPointFromSensorReading(float rawMm, float yawDeg, float motorPitchDeg) {
+    const float pitchRad = motorPitchDeg * DEG_TO_RAD;
+    const float pitchPlaneX =
+        Config::kSensorFaceOffsetMm + rawMm * cosf(pitchRad);
+    const float pitchPlaneZ =
+        Config::kSensorAboveAxisMm + rawMm * sinf(pitchRad);
+
+    const float yawRad = yawDeg * DEG_TO_RAD;
+    const float cosYaw = cosf(yawRad);
+    const float sinYaw = sinf(yawRad);
+
+    Point3D point{};
+    point.x = pitchPlaneX * cosYaw;
+    point.y = pitchPlaneX * sinYaw;
+    point.z = pitchPlaneZ;
+    return point;
+}
+
+float distanceFromAxisMm(const Point3D& point) {
+    return sqrtf(point.x * point.x + point.y * point.y + point.z * point.z);
+}
+
+float pitchFromAxisDeg(const Point3D& point) {
+    const float horizontalMm = sqrtf(point.x * point.x + point.y * point.y);
+    return atan2f(point.z, horizontalMm) / DEG_TO_RAD;
+}
 
 struct ScanPoint {
     uint32_t frameId;
@@ -812,8 +825,13 @@ public:
                 }
 
                 const float rawMm = static_cast<float>(distanceMm);
-                const float axialMm = toAxialDistanceMm(rawMm);
-                const float truePitchDeg = toTruePitchDeg(pitchAxis_.currentAngleDeg(), rawMm);
+                const Point3D hitPointMm = scanPointFromSensorReading(
+                    rawMm,
+                    yawAxis_.currentAngleDeg(),
+                    pitchAxis_.currentAngleDeg()
+                );
+                const float axialMm = distanceFromAxisMm(hitPointMm);
+                const float truePitchDeg = pitchFromAxisDeg(hitPointMm);
 
                 ScanPoint point{};
                 point.frameId = frameId;
@@ -821,8 +839,7 @@ public:
                 point.yawDeg = yawAxis_.currentAngleDeg();
                 point.pitchDeg = truePitchDeg;
                 point.distanceMm = static_cast<uint16_t>(lroundf(axialMm));
-                point.positionMm =
-                    sphericalToCartesian(axialMm, point.yawDeg, truePitchDeg);
+                point.positionMm = hitPointMm;
 
                 robotLink_.sendSensorStatus("RANGE_VALID");
                 robotLink_.sendPoint(point, networkEnabled);

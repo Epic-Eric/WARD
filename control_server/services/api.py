@@ -25,6 +25,12 @@ else:
     IMPORT_ERROR = None
 
 
+MOVE_TO_MIN_DEGREES = -360.0
+MOVE_TO_MAX_DEGREES = 360.0
+MOVE_TO_PITCH_MIN_DEGREES = -60.0
+MOVE_TO_PITCH_MAX_DEGREES = 60.0
+
+
 def combined_status(
     robot_hub: RobotTcpHub, automation: ScanAutomationController
 ) -> dict[str, Any]:
@@ -235,6 +241,22 @@ def create_app(
             raise HTTPException(
                 status_code=400, detail="yaw_deg and pitch_deg must be numbers."
             ) from exc
+        if not MOVE_TO_MIN_DEGREES <= yaw_deg <= MOVE_TO_MAX_DEGREES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"yaw_deg must be between {MOVE_TO_MIN_DEGREES:.0f} "
+                    f"and {MOVE_TO_MAX_DEGREES:.0f}."
+                ),
+            )
+        if not MOVE_TO_PITCH_MIN_DEGREES <= pitch_deg <= MOVE_TO_PITCH_MAX_DEGREES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"pitch_deg must be between {MOVE_TO_PITCH_MIN_DEGREES:.0f} "
+                    f"and {MOVE_TO_PITCH_MAX_DEGREES:.0f}."
+                ),
+            )
 
         status = combined_status(robot_hub, automation)
         if not status["robot_connected"]:

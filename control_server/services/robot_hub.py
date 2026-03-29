@@ -50,6 +50,8 @@ class RobotTcpHub:
         self._live_frame_id: int | None = None
         self._live_points: list[list[float]] = []
         self._live_samples: list[dict[str, float | int]] = []
+        self._detected_lan_ip = detect_lan_ip()
+        self._detected_hostname = detect_hostname()
 
     def start(self) -> None:
         if self._server_thread is not None:
@@ -83,15 +85,21 @@ class RobotTcpHub:
 
     def send_command(self, command: str) -> None:
         encoded = f"{command}\n".encode("utf-8")
+        self._expire_stale_client("Robot heartbeat timed out.")
         with self._lock:
-            self._expire_stale_client_locked("Robot heartbeat timed out.")
-            if self._client_socket is None or not self._robot_connected:
+            client_socket = self._client_socket
+            if client_socket is None or not self._robot_connected:
                 raise RuntimeError("Robot is not connected.")
-            try:
-                self._client_socket.sendall(encoded)
-            except OSError as exc:
-                self._last_error = f"Failed to send command: {exc}"
-                raise RuntimeError("Failed to send command to robot.") from exc
+        try:
+            client_socket.sendall(encoded)
+        except OSError as exc:
+            with self._lock:
+                if self._client_socket is client_socket:
+                    self._last_error = f"Failed to send command: {exc}"
+            raise RuntimeError("Failed to send command to robot.") from exc
+        with self._lock:
+            if self._client_socket is not client_socket or not self._robot_connected:
+                raise RuntimeError("Robot is not connected.")
             self._last_command = command
             self._last_command_status = "sent"
             self._last_command_detail = None
@@ -144,8 +152,8 @@ class RobotTcpHub:
             return dict(self._last_scan_result)
 
     def snapshot(self) -> dict[str, Any]:
+        self._expire_stale_client("Robot heartbeat timed out.")
         with self._lock:
-            self._expire_stale_client_locked("Robot heartbeat timed out.")
             status = {
                 "robot_connected": self._robot_connected,
                 "robot_address": self._robot_address,
@@ -173,19 +181,19 @@ class RobotTcpHub:
                 else None,
                 "robot_tcp_port": self.port,
                 "http_port": HTTP_PORT,
-                "detected_lan_ip": detect_lan_ip(),
-                "detected_hostname": detect_hostname(),
+                "detected_lan_ip": self._detected_lan_ip,
+                "detected_hostname": self._detected_hostname,
             }
-            status.update(self._recorder.snapshot())
-            return status
+        status.update(self._recorder.snapshot())
+        return status
 
     def live_points_snapshot(self) -> dict[str, Any]:
+        self._expire_stale_client("Robot heartbeat timed out.")
         with self._lock:
-            self._expire_stale_client_locked("Robot heartbeat timed out.")
-            return {
+            live_points = list(self._live_points)
+            live_samples = list(self._live_samples)
+            snapshot = {
                 "frame_id": self._live_frame_id,
-                "points": list(self._live_points),
-                "samples": [dict(sample) for sample in self._live_samples],
                 "render_mode": "raw",
                 "scan_in_progress": self._scan_in_progress,
                 "robot_state": self._robot_state,
@@ -196,6 +204,9 @@ class RobotTcpHub:
                 "sensor_status": self._sensor_status,
                 "sensor_timeout": self._sensor_timeout,
             }
+        snapshot["points"] = live_points
+        snapshot["samples"] = [dict(sample) for sample in live_samples]
+        return snapshot
 
     def _serve_forever(self) -> None:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -212,8 +223,7 @@ class RobotTcpHub:
                 try:
                     client_socket, address = server_socket.accept()
                 except socket.timeout:
-                    with self._lock:
-                        self._expire_stale_client_locked("Robot heartbeat timed out.")
+                    self._expire_stale_client("Robot heartbeat timed out.")
                     continue
                 except OSError:
                     if self._stop_event.is_set():
@@ -286,7 +296,7 @@ class RobotTcpHub:
             scan_was_active = self._scan_in_progress
             current_frame = self._stats.current_frame
             current_points = self._stats.current_frame_points
-            capture_path = str(self._recorder.csv_path) if self._recorder.csv_path else None
+            capture_path = self._recorder.snapshot().get("current_capture")
             if is_active_socket:
                 self._client_socket = None
                 self._robot_connected = False
@@ -322,6 +332,22 @@ class RobotTcpHub:
             return
         parts = line.split(",")
         message_type = parts[0]
+        if message_type == "HELLO":
+            self._recorder.mark_run_boundary("HELLO")
+        elif message_type == "RESET":
+            self._recorder.mark_run_boundary("RESET")
+        elif message_type == "FRAME_BEGIN" and len(parts) >= 3:
+            self._recorder.ensure_open()
+        elif message_type == "POINT" and len(parts) == 9:
+            self._recorder.write_point(parts[1:])
+            try:
+                point_index = int(parts[2])
+            except ValueError:
+                point_index = None
+            if point_index is not None and (point_index + 1) % 25 == 0:
+                self._recorder.flush()
+        elif message_type == "FRAME_END" and len(parts) >= 3:
+            self._recorder.flush()
         with self._scan_condition:
             self._note_robot_activity_locked()
             if self._handle_connection_messages(message_type, parts, line):
@@ -333,7 +359,6 @@ class RobotTcpHub:
     def _handle_connection_messages(self, message_type: str, parts: list[str], line: str) -> bool:
         if message_type == "HELLO":
             self._stats.reset()
-            self._recorder.mark_run_boundary("HELLO")
             self._robot_protocol = ",".join(parts[1:]) if len(parts) > 1 else None
             self._robot_state = "idle"
             self._scan_in_progress = False
@@ -344,7 +369,6 @@ class RobotTcpHub:
             return True
         if message_type == "RESET":
             self._stats.reset()
-            self._recorder.mark_run_boundary("RESET")
             self._sensor_timeout = False
             self._last_sensor_error = None
             self._last_event = f"Run boundary: {line}"
@@ -422,7 +446,6 @@ class RobotTcpHub:
 
     def _handle_scan_messages(self, message_type: str, parts: list[str], line: str) -> bool:
         if message_type == "FRAME_BEGIN" and len(parts) >= 3:
-            self._recorder.ensure_open()
             self._stats.frames += 1
             self._stats.current_frame_points = 0
             self._scan_in_progress = True
@@ -441,7 +464,6 @@ class RobotTcpHub:
             self._last_event = f"Frame {parts[1]} started at device millis={parts[2]}"
             return True
         if message_type == "FRAME_END" and len(parts) >= 3:
-            self._recorder.flush()
             self._scan_in_progress = False
             self._robot_state = "idle"
             if self._sensor_status == "SCANNING":
@@ -451,13 +473,12 @@ class RobotTcpHub:
             self._last_scan_result = {
                 "status": "completed",
                 "frame_id": self._stats.current_frame,
-                "capture_path": str(self._recorder.csv_path) if self._recorder.csv_path else None,
+                "capture_path": self._recorder.snapshot().get("current_capture"),
                 "point_count": self._stats.current_frame_points,
             }
             self._scan_condition.notify_all()
             return True
         if message_type == "POINT" and len(parts) == 9:
-            self._recorder.write_point(parts[1:])
             self._stats.points += 1
             self._stats.current_frame_points += 1
             try:
@@ -485,8 +506,6 @@ class RobotTcpHub:
                     "z_mm": z_mm,
                 }
             )
-            if self._stats.current_frame_points % 25 == 0:
-                self._recorder.flush()
             return True
         if message_type == "SENSOR_TIMEOUT":
             self._sensor_timeout = True
@@ -510,7 +529,7 @@ class RobotTcpHub:
             self._last_scan_result = {
                 "status": "aborted",
                 "frame_id": frame_id,
-                "capture_path": str(self._recorder.csv_path) if self._recorder.csv_path else None,
+                "capture_path": self._recorder.snapshot().get("current_capture"),
                 "point_count": self._stats.current_frame_points,
             }
             self._scan_condition.notify_all()
@@ -537,14 +556,27 @@ class RobotTcpHub:
             return "scanning"
         return "idle"
 
-    def _expire_stale_client_locked(self, reason: str) -> None:
+    def _expire_stale_client(self, reason: str) -> None:
+        with self._scan_condition:
+            stale_socket, should_close_recorder = self._expire_stale_client_locked(reason)
+        if should_close_recorder:
+            self._recorder.close()
+        if stale_socket is not None:
+            try:
+                stale_socket.close()
+            except OSError:
+                pass
+
+    def _expire_stale_client_locked(
+        self, reason: str
+    ) -> tuple[socket.socket | None, bool]:
         if not self._is_robot_stale_locked():
-            return
+            return None, False
         stale_socket = self._client_socket
         scan_was_active = self._scan_in_progress
         current_frame = self._stats.current_frame
         current_points = self._stats.current_frame_points
-        capture_path = str(self._recorder.csv_path) if self._recorder.csv_path else None
+        capture_path = self._recorder.snapshot().get("current_capture")
         self._client_socket = None
         self._robot_connected = False
         self._robot_address = None
@@ -564,9 +596,4 @@ class RobotTcpHub:
                 "point_count": current_points,
             }
             self._scan_condition.notify_all()
-        self._recorder.close()
-        if stale_socket is not None:
-            try:
-                stale_socket.close()
-            except OSError:
-                pass
+        return stale_socket, True
