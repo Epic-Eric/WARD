@@ -5,6 +5,7 @@ import * as THREE from "three";
 import AlertToast from "./components/AlertToast";
 import CommandBar from "./components/CommandBar";
 import ConfirmDialog from "./components/ConfirmDialog";
+import HelpDialog from "./components/HelpDialog";
 import { aimAtCluster, installBaselineBundle, setAutoClearDebris as apiSetAutoClearDebris } from "./lib/controlServerClient";
 
 function emptyPayload(mode = "raw") {
@@ -1236,6 +1237,7 @@ export default function App() {
   const [commandMessage, setCommandMessage] = useState("");
   const [alarm, setAlarm] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [installingBaseline, setInstallingBaseline] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState(null);
@@ -1451,6 +1453,21 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [confirmDialog]);
+
+  useEffect(() => {
+    if (!helpOpen) {
+      return undefined;
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setHelpOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [helpOpen]);
 
   useEffect(() => {
     if (selectedClusterId && !clusters.some((cluster) => cluster.cluster_id === selectedClusterId)) {
@@ -1978,6 +1995,7 @@ export default function App() {
       </div>
 
       <ConfirmDialog dialog={confirmDialog} onResolve={resolveConfirm} />
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
 
       <div className="bottom-shell">
         {scanInProgress ? (
@@ -2072,6 +2090,7 @@ export default function App() {
               scanDegreesInputRef={scanDegreesInputRef}
               onAlarm={raiseAlarm}
               onCommandMessage={setCommandMessage}
+              onOpenHelp={() => setHelpOpen(true)}
               requestConfirm={requestConfirm}
             />
           </div>
@@ -2079,21 +2098,27 @@ export default function App() {
             <div className="robot-strip">
               <div className="robot-strip__item">
                 <span>Link</span>
-                <strong className={`robot-badge robot-badge--${toneForConnectionState(status?.robot_connection_state)}`}>
-                  {status?.robot_connected ? (status?.robot_connection_state ?? "connected") : "disconnected"}
-                </strong>
+                <span
+                  className={`status-light status-light--${toneForConnectionState(status?.robot_connection_state)}`}
+                  title={`Link: ${status?.robot_connected ? (status?.robot_connection_state ?? "connected") : "disconnected"}`}
+                  aria-label={`Link ${status?.robot_connected ? (status?.robot_connection_state ?? "connected") : "disconnected"}`}
+                />
               </div>
               <div className="robot-strip__item">
                 <span>Robot</span>
-                <strong className={`robot-badge robot-badge--${toneForRobotState(status?.robot_state)}`}>
-                  {status?.robot_state ?? "-"}
-                </strong>
+                <span
+                  className={`status-light status-light--${toneForRobotState(status?.robot_state)}`}
+                  title={`Robot: ${status?.robot_state ?? "-"}`}
+                  aria-label={`Robot ${status?.robot_state ?? "-"}`}
+                />
               </div>
               <div className="robot-strip__item">
                 <span>Sensor</span>
-                <strong className={`robot-badge robot-badge--${toneForSensorStatus(status?.sensor_status)}`}>
-                  {status?.sensor_status ?? "-"}
-                </strong>
+                <span
+                  className={`status-light status-light--${toneForSensorStatus(status?.sensor_status)}`}
+                  title={`Sensor: ${status?.sensor_status ?? "-"}`}
+                  aria-label={`Sensor ${status?.sensor_status ?? "-"}`}
+                />
               </div>
               <div className="robot-strip__item">
                 <span>Yaw</span>

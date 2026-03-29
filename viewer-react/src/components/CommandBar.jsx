@@ -25,6 +25,7 @@ export default function CommandBar({
   autoClearDebris,
   onAlarm,
   onCommandMessage,
+  onOpenHelp,
   requestConfirm,
   scanDegreesInputRef,
 }) {
@@ -214,6 +215,15 @@ export default function CommandBar({
           onClick={() => setMoreOpen((value) => !value)}
         >
           ⋯
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setMoreOpen(false);
+            onOpenHelp?.();
+          }}
+        >
+          Help
         </button>
         {moreOpen ? (
           <div className="more-menu">
