@@ -12,6 +12,7 @@ from typing import Any
 _SENSOR_FACE_OFFSET_MM = 34.0   # sensor face is 34 mm forward of the axis
 _SENSOR_ABOVE_AXIS_MM = 35.0    # sensor centre is 35 mm above the pitch axis
 _LASER_ABOVE_AXIS_MM = 13.0     # laser is 22 mm below sensor → 35 - 22 = 13 mm above axis
+_CLEARING_DWELL_SECONDS = 2.0
 
 
 def _compute_laser_angles(centroid_mm: list[float]) -> tuple[float, float]:
@@ -83,6 +84,7 @@ class ScanAutomationController:
         self._baseline_source_capture: str | None = None
         self._baseline_point_map: dict[tuple[int, int], dict[str, float | int]] | None = None
         self._baseline_surface_samples: list[dict[str, float | int]] | None = None
+        self._baseline_surface_points: list[list[float]] | None = None
         self._last_residual_path: str | None = None
         self._last_residual_summary: str | None = None
         self._last_residual_points: int | None = None
@@ -90,7 +92,11 @@ class ScanAutomationController:
         self._last_debris_clusters: list[dict] = []
         self._clearing_debris_active = False
         self._clearing_debris_sequence = 0
+        self._cleared_debris_sequence = 0
+        self._last_cleared_cluster_id: str | None = None
         self._auto_clear_debris = True
+        self._baseline_revision = 0
+        self._live_payload_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._load_baseline_state()
 
     def _load_baseline_state(self) -> None:
@@ -102,6 +108,7 @@ class ScanAutomationController:
             self._baseline_source_capture = None
             self._baseline_point_map = None
             self._baseline_surface_samples = None
+            self._baseline_surface_points = None
             if meta is not None:
                 baseline_degrees = meta.get("scan_degrees")
                 if baseline_degrees is not None:
@@ -115,6 +122,9 @@ class ScanAutomationController:
                 try:
                     self._baseline_point_map = load_pose_point_map(self.baseline_path)
                     self._baseline_surface_samples = build_surface_samples(self._baseline_point_map, fill_air=True)
+                    self._baseline_surface_points = points_from_samples(self._baseline_surface_samples)
+                    self._baseline_revision += 1
+                    self._clear_live_payload_cache_locked()
                 except Exception as exc:
                     self._baseline_exists = False
                     self._automation_error = str(exc)
@@ -142,6 +152,8 @@ class ScanAutomationController:
                 "last_debris_clusters": list(self._last_debris_clusters),
                 "clearing_debris_active": self._clearing_debris_active,
                 "clearing_debris_sequence": self._clearing_debris_sequence,
+                "cleared_debris_sequence": self._cleared_debris_sequence,
+                "last_cleared_cluster_id": self._last_cleared_cluster_id,
                 "auto_clear_debris": self._auto_clear_debris,
             }
 
@@ -159,7 +171,9 @@ class ScanAutomationController:
     def set_residual_tolerance(self, tolerance_mm: float) -> float:
         normalized = max(0.0, float(tolerance_mm))
         with self._lock:
-            self._residual_tolerance_mm = normalized
+            if self._residual_tolerance_mm != normalized:
+                self._residual_tolerance_mm = normalized
+                self._clear_live_payload_cache_locked()
         return normalized
 
     def set_configured_scan_degrees(self, scan_degrees: float) -> float:
@@ -177,26 +191,76 @@ class ScanAutomationController:
                 and self._pending_operation != "saving_baseline"
             )
             baseline_point_map = self._baseline_point_map
-            baseline_surface_samples = [dict(sample) for sample in self._baseline_surface_samples] if self._baseline_surface_samples is not None else None
+            baseline_surface_samples = self._baseline_surface_samples
+            baseline_surface_points = self._baseline_surface_points
             configured_tolerance_mm = self._residual_tolerance_mm
+            baseline_revision = self._baseline_revision
 
         normalized_mode = mode.strip().lower() if mode else "auto"
         if normalized_mode not in {"auto", "raw", "residual", "baseline"}:
             normalized_mode = "auto"
         normalized_tolerance_mm = configured_tolerance_mm if tolerance_mm is None else self.set_residual_tolerance(tolerance_mm)
 
-        raw_point_map = point_map_from_samples(raw_payload.get("samples", []))
-        raw_surface_samples = build_surface_samples(raw_point_map, frame_id=raw_payload.get("frame_id"), fill_air=True)
+        cache_key = (
+            normalized_mode,
+            raw_payload.get("frame_id"),
+            len(raw_payload.get("samples", [])),
+            round(normalized_tolerance_mm, 3),
+            baseline_revision,
+            baseline_available,
+        )
+        with self._lock:
+            cached_payload = self._live_payload_cache.get(cache_key)
+        if cached_payload is not None:
+            return cached_payload
+
+        payload: dict[str, Any]
+        raw_samples = raw_payload.get("samples", [])
 
         if normalized_mode == "baseline" and baseline_available and baseline_surface_samples is not None:
-            return self._baseline_payload(raw_payload, baseline_surface_samples, normalized_mode, baseline_available, normalized_tolerance_mm)
-        if normalized_mode == "raw" or not baseline_available or baseline_point_map is None:
-            return self._raw_payload(raw_payload, raw_surface_samples, normalized_mode, baseline_available, normalized_tolerance_mm)
-        return self._residual_payload(raw_payload, baseline_point_map, normalized_mode, baseline_available, normalized_tolerance_mm)
+            payload = self._baseline_payload(
+                raw_payload,
+                baseline_surface_samples,
+                baseline_surface_points,
+                normalized_mode,
+                baseline_available,
+                normalized_tolerance_mm,
+            )
+        elif normalized_mode == "raw" or not baseline_available or baseline_point_map is None:
+            payload = self._raw_payload(
+                raw_payload,
+                raw_samples,
+                normalized_mode,
+                baseline_available,
+                normalized_tolerance_mm,
+            )
+        else:
+            payload = self._residual_payload(
+                raw_payload,
+                baseline_point_map,
+                normalized_mode,
+                baseline_available,
+                normalized_tolerance_mm,
+            )
+        with self._lock:
+            self._remember_live_payload_locked(cache_key, payload)
+        return payload
 
-    def _baseline_payload(self, raw_payload: dict[str, Any], baseline_surface_samples: list[dict[str, float | int]], normalized_mode: str, baseline_available: bool, normalized_tolerance_mm: float) -> dict[str, Any]:
+    def _baseline_payload(
+        self,
+        raw_payload: dict[str, Any],
+        baseline_surface_samples: list[dict[str, float | int]],
+        baseline_surface_points: list[list[float]] | None,
+        normalized_mode: str,
+        baseline_available: bool,
+        normalized_tolerance_mm: float,
+    ) -> dict[str, Any]:
         payload = dict(raw_payload)
-        payload["points"] = points_from_samples(baseline_surface_samples)
+        payload["points"] = (
+            baseline_surface_points
+            if baseline_surface_points is not None
+            else points_from_samples(baseline_surface_samples)
+        )
         payload["samples"] = baseline_surface_samples
         payload["render_mode"] = "baseline"
         payload["requested_mode"] = normalized_mode
@@ -207,15 +271,22 @@ class ScanAutomationController:
         payload["top_clusters"] = []
         return payload
 
-    def _raw_payload(self, raw_payload: dict[str, Any], raw_surface_samples: list[dict[str, float | int]], normalized_mode: str, baseline_available: bool, normalized_tolerance_mm: float) -> dict[str, Any]:
+    def _raw_payload(
+        self,
+        raw_payload: dict[str, Any],
+        raw_samples: list[dict[str, float | int]],
+        normalized_mode: str,
+        baseline_available: bool,
+        normalized_tolerance_mm: float,
+    ) -> dict[str, Any]:
         payload = dict(raw_payload)
-        payload["points"] = points_from_samples(raw_surface_samples)
-        payload["samples"] = raw_surface_samples
+        payload["points"] = raw_payload.get("points", [])
+        payload["samples"] = raw_samples
         payload["render_mode"] = "raw"
         payload["requested_mode"] = normalized_mode
         payload["baseline_available"] = baseline_available
         payload["residual_tolerance_mm"] = normalized_tolerance_mm
-        payload["matched_points"] = len(raw_surface_samples)
+        payload["matched_points"] = len(raw_samples)
         payload["clusters"] = []
         payload["top_clusters"] = []
         return payload
@@ -284,6 +355,17 @@ class ScanAutomationController:
         payload["top_clusters"] = clusters[:3]
         return payload
 
+    def _clear_live_payload_cache_locked(self) -> None:
+        self._live_payload_cache.clear()
+
+    def _remember_live_payload_locked(
+        self, cache_key: tuple[Any, ...], payload: dict[str, Any]
+    ) -> None:
+        self._live_payload_cache[cache_key] = payload
+        while len(self._live_payload_cache) > 8:
+            oldest_key = next(iter(self._live_payload_cache))
+            del self._live_payload_cache[oldest_key]
+
     def _start_scan_and_wait(self, scan_degrees: float) -> dict[str, Any]:
         token = self.robot_hub.scan_result_token()
         self.robot_hub.send_command(format_scan_command(scan_degrees))
@@ -317,6 +399,9 @@ class ScanAutomationController:
             self._baseline_source_capture = resolved_source_capture
             self._baseline_point_map = point_map
             self._baseline_surface_samples = build_surface_samples(point_map, fill_air=True)
+            self._baseline_surface_points = points_from_samples(self._baseline_surface_samples)
+            self._baseline_revision += 1
+            self._clear_live_payload_cache_locked()
             self._automation_error = None
             self._automation_event = f"Saved baseline from {source_path.name} at {resolved_scan_degrees:.2f} degrees."
 
@@ -385,6 +470,9 @@ class ScanAutomationController:
             self._baseline_source_capture = source_capture
             self._baseline_point_map = load_pose_point_map(self.baseline_path)
             self._baseline_surface_samples = build_surface_samples(self._baseline_point_map, fill_air=True)
+            self._baseline_surface_points = points_from_samples(self._baseline_surface_samples)
+            self._baseline_revision += 1
+            self._clear_live_payload_cache_locked()
             self._automation_error = None
             self._automation_event = f"Imported baseline from {source_capture} at {resolved_scan_degrees:.2f} degrees."
 
@@ -405,6 +493,9 @@ class ScanAutomationController:
             self._baseline_source_capture = None
             self._baseline_point_map = None
             self._baseline_surface_samples = None
+            self._baseline_surface_points = None
+            self._baseline_revision += 1
+            self._clear_live_payload_cache_locked()
             self._last_residual_path = None
             self._last_residual_summary = None
             self._last_residual_points = None
@@ -506,7 +597,11 @@ class ScanAutomationController:
                                     if self.robot_hub.snapshot().get("robot_state") in {"idle", "disconnected"}:
                                         break
                                 with self._lock:
+                                    self._cleared_debris_sequence += 1
+                                    self._last_cleared_cluster_id = str(cluster_id)
                                     self._automation_event = f"Debris cleared: {cluster_id}"
+                                if self._monitor_stop_event.wait(_CLEARING_DWELL_SECONDS):
+                                    break
                         finally:
                             with self._lock:
                                 self._clearing_debris_active = False

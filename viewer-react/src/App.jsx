@@ -115,66 +115,99 @@ function exportFilename() {
   return `ward_scan_bundle_${timestamp}.json`;
 }
 
-function useStatusData() {
+function useStatusData(intervalMs = 1000) {
   const [status, setStatus] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
+    let controller = null;
 
     async function load() {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      controller = new AbortController();
       try {
-        const response = await fetch("/api/status");
+        const response = await fetch("/api/status", { signal: controller.signal });
         const payload = await response.json();
         if (!cancelled) {
           setStatus(payload);
         }
-      } catch {
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
         if (!cancelled) {
           setStatus(null);
         }
+      } finally {
+        inFlight = false;
+        controller = null;
       }
     }
 
     load();
-    const timer = window.setInterval(load, 1000);
+    const timer = window.setInterval(load, intervalMs);
     return () => {
       cancelled = true;
+      controller?.abort();
       window.clearInterval(timer);
     };
-  }, []);
+  }, [intervalMs]);
 
   return status;
 }
 
-function useLivePoints(mode, residualTolerance, refreshNonce = 0) {
+function useLivePoints(mode, residualTolerance, refreshNonce = 0, enabled = true, intervalMs = 500) {
   const [payload, setPayload] = useState(emptyPayload(mode));
 
   useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
+
     let cancelled = false;
+    let inFlight = false;
+    let controller = null;
 
     async function load() {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      controller = new AbortController();
       try {
         const response = await fetch(
           `/api/live-points?mode=${encodeURIComponent(mode)}&tolerance_mm=${encodeURIComponent(residualTolerance)}`,
+          { signal: controller.signal },
         );
         const nextPayload = await response.json();
         if (!cancelled) {
           setPayload(nextPayload);
         }
-      } catch {
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
         if (!cancelled) {
           setPayload(emptyPayload(mode));
         }
+      } finally {
+        inFlight = false;
+        controller = null;
       }
     }
 
     load();
-    const timer = window.setInterval(load, 500);
+    const timer = window.setInterval(load, intervalMs);
     return () => {
       cancelled = true;
+      controller?.abort();
       window.clearInterval(timer);
     };
-  }, [mode, residualTolerance, refreshNonce]);
+  }, [mode, residualTolerance, refreshNonce, enabled, intervalMs]);
 
   return payload;
 }
@@ -1248,8 +1281,24 @@ export default function App() {
   const [shootingCluster, setShootingCluster] = useState(false);
   const [autoClearDebris, setAutoClearDebris] = useState(true);
   const effectiveMode = baselineHoldActive || baselinePinned ? "baseline" : requestedMode;
-  const livePayload = useLivePoints(effectiveMode, residualTolerance, clusterRefreshNonce);
-  const residualLivePayload = useLivePoints("residual", residualTolerance, clusterRefreshNonce);
+  const residualPollingEnabled =
+    !importedBundle &&
+    Boolean(liveStatus?.baseline_exists) &&
+    requestedMode === "residual";
+  const livePayload = useLivePoints(
+    effectiveMode,
+    residualTolerance,
+    clusterRefreshNonce,
+    !importedBundle,
+    500,
+  );
+  const residualLivePayload = useLivePoints(
+    "residual",
+    residualTolerance,
+    clusterRefreshNonce,
+    residualPollingEnabled,
+    900,
+  );
   const status = importedBundle?.status ?? liveStatus;
   const activePayload = importedBundle
     ? selectImportedPayload(importedBundle, requestedMode, baselineHoldActive)
@@ -1260,9 +1309,12 @@ export default function App() {
   const points = activePayload.points ?? [];
   const samples = activePayload.samples ?? [];
   const clusters = Array.isArray(activePayload.clusters) ? activePayload.clusters : [];
+  const fallbackStatusClusters = Array.isArray(status?.last_debris_clusters)
+    ? status.last_debris_clusters
+    : [];
   const leaderboardClusters = Array.isArray(residualSourcePayload?.clusters)
     ? residualSourcePayload.clusters
-    : [];
+    : fallbackStatusClusters;
   const topClusters =
     Array.isArray(residualSourcePayload?.top_clusters) &&
     residualSourcePayload.top_clusters.length > 0
@@ -1341,6 +1393,8 @@ export default function App() {
       tone: nextAlarm.tone ?? "neutral",
       title: nextAlarm.title ?? "Notice",
       detail: nextAlarm.detail ?? "",
+      timeoutMs:
+        typeof nextAlarm.timeoutMs === "number" ? nextAlarm.timeoutMs : 4400,
     });
   }
 
@@ -1380,13 +1434,42 @@ export default function App() {
     const centroid = Array.isArray(cluster.centroid_mm) && cluster.centroid_mm.length === 3
       ? cluster.centroid_mm
       : [cluster.bbox.center_x_mm, cluster.bbox.center_y_mm, cluster.bbox.center_z_mm];
+    setClusterContextMenu(null);
+    const confirmed = await requestConfirm({
+      title: `Shoot laser at ${cluster.cluster_id}?`,
+      detail:
+        "The robot will move the laser toward this debris cluster. Confirm that the area is clear before continuing.",
+      tone: "warn",
+      confirmLabel: "Shoot laser",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) {
+      setCommandMessage(`Laser shot cancelled for ${cluster.cluster_id}.`);
+      return;
+    }
     setShootingCluster(true);
+    raiseAlarm({
+      tone: "warn",
+      title: `Aiming laser at ${cluster.cluster_id}`,
+      detail: "Laser command sent to the robot. Waiting for the move to finish.",
+      timeoutMs: 0,
+    });
     try {
       await aimAtCluster(centroid);
-      setClusterContextMenu(null);
       setCommandMessage(`Aimed laser at ${cluster.cluster_id}.`);
+      raiseAlarm({
+        title: `Laser aimed at ${cluster.cluster_id}`,
+        detail: "The viewer sent the targeting command successfully.",
+        timeoutMs: 5000,
+      });
     } catch (error) {
       setCommandMessage(`Aim failed: ${error instanceof Error ? error.message : String(error)}`);
+      raiseAlarm({
+        tone: "danger",
+        title: `Laser aim failed for ${cluster.cluster_id}`,
+        detail: error instanceof Error ? error.message : String(error),
+        timeoutMs: 7000,
+      });
     } finally {
       setShootingCluster(false);
     }
@@ -1435,7 +1518,10 @@ export default function App() {
     if (!alarm) {
       return undefined;
     }
-    const timer = window.setTimeout(() => setAlarm(null), 4400);
+    if (!Number.isFinite(alarm.timeoutMs) || alarm.timeoutMs <= 0) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setAlarm(null), alarm.timeoutMs);
     return () => window.clearTimeout(timer);
   }, [alarm]);
 

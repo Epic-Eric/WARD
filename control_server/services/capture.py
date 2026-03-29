@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,15 +54,19 @@ class CaptureRecorder:
         self.writer: csv.writer | None = None
         self.file_obj: Any | None = None
         self.rows_written = 0
+        self.pending_rows: list[list[str]] = []
         self.pending_reason: str | None = "connection start"
         self.last_capture_path: Path | None = None
+        self.last_flush_monotonic: float | None = None
 
     def start_new_capture(self, reason: str) -> None:
         with self._lock:
             self.close()
             self.csv_path, self.writer, self.file_obj = open_capture_file(self.output_dir)
             self.rows_written = 0
+            self.pending_rows = []
             self.pending_reason = None
+            self.last_flush_monotonic = time.monotonic()
             print(f"Writing capture to {self.csv_path} ({reason})")
 
     def ensure_open(self) -> None:
@@ -78,25 +83,46 @@ class CaptureRecorder:
     def write_point(self, row: list[str]) -> None:
         with self._lock:
             self.ensure_open()
-            assert self.writer is not None
-            self.writer.writerow(row)
+            self.pending_rows.append(list(row))
             self.rows_written += 1
 
     def flush(self) -> None:
         with self._lock:
+            if self.file_obj is not None and self.writer is not None and self.pending_rows:
+                self.writer.writerows(self.pending_rows)
+                self.pending_rows = []
             if self.file_obj is not None:
                 self.file_obj.flush()
+                self.last_flush_monotonic = time.monotonic()
+
+    def flush_if_needed(
+        self, max_pending_rows: int = 256, max_age_seconds: float = 1.0
+    ) -> None:
+        with self._lock:
+            if self.file_obj is None:
+                return
+            if len(self.pending_rows) >= max_pending_rows:
+                self.flush()
+                return
+            if (
+                self.pending_rows
+                and self.last_flush_monotonic is not None
+                and (time.monotonic() - self.last_flush_monotonic) >= max_age_seconds
+            ):
+                self.flush()
 
     def close(self) -> None:
         with self._lock:
             if self.file_obj is not None:
-                self.file_obj.flush()
+                self.flush()
                 self.file_obj.close()
                 self.last_capture_path = self.csv_path
             self.csv_path = None
             self.writer = None
             self.file_obj = None
             self.rows_written = 0
+            self.pending_rows = []
+            self.last_flush_monotonic = None
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

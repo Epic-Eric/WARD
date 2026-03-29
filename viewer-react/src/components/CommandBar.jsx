@@ -32,6 +32,7 @@ export default function CommandBar({
   const [moreOpen, setMoreOpen] = useState(false);
   const [baselineAfterScan, setBaselineAfterScan] = useState(false);
   const prevClearingSeqRef = useRef(status?.clearing_debris_sequence ?? 0);
+  const prevClearedSeqRef = useRef(status?.cleared_debris_sequence ?? 0);
   const robotConnected = Boolean(status?.robot_connected);
   const scanInProgress = Boolean(status?.scan_in_progress);
   const previousScanInProgressRef = useRef(scanInProgress);
@@ -77,6 +78,20 @@ export default function CommandBar({
       });
     }
   }, [status?.clearing_debris_sequence, status?.last_debris_clusters, onAlarm]);
+
+  useEffect(() => {
+    const seq = status?.cleared_debris_sequence ?? 0;
+    if (seq > prevClearedSeqRef.current) {
+      prevClearedSeqRef.current = seq;
+      const clusterId = status?.last_cleared_cluster_id;
+      onAlarm?.({
+        title: "Shot fired",
+        detail: clusterId ? `Cleared ${clusterId}.` : "Debris clearing pulse sent.",
+        tone: "warn",
+        timeoutMs: 1000,
+      });
+    }
+  }, [status?.cleared_debris_sequence, status?.last_cleared_cluster_id, onAlarm]);
 
   async function run(label, action) {
     try {

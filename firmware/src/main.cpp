@@ -40,19 +40,19 @@ constexpr int kYawPin4 = 2;
 
 constexpr int kStepsPerRevolution = 200;
 constexpr float kYawGearRatio = 6.0f;
-constexpr float kPitchGearRatio = 2.0f;
+constexpr float kPitchGearRatio = 1.0f;
 constexpr float kYawAnglePerStepDeg =
     360.0f / static_cast<float>(kStepsPerRevolution) / kYawGearRatio;
 constexpr float kPitchAnglePerStepDeg =
     360.0f / static_cast<float>(kStepsPerRevolution) / kPitchGearRatio;
 
-constexpr float kPitchStartingAngleDeg = -60.0f;
+constexpr float kPitchStartingAngleDeg = -120.0f;
 constexpr float kYawStartingAngleDeg = 0.0f;
 
 constexpr int kYawMotorSpeedRpm = 20;
 constexpr int kPitchMotorSpeedRpm = 20;
 
-constexpr float kPitchSweepStartDeg = -55.0f;
+constexpr float kPitchSweepStartDeg = -65.0f;
 constexpr float kPitchSweepEndDeg = -25.0f;
 constexpr float kYawSweepStartDeg = 0.0f;
 constexpr float kDefaultScanDegrees = 20.0f;
@@ -90,37 +90,23 @@ struct Point3D {
     float z;
 };
 
-// Reconstruct the hit in the pitch plane from the exact sensor origin.
-// The sensor origin sits forward and above the pitch axis, so the point seen by the beam is:
-//   x = f + d*cos(theta_motor)
-//   z = h + d*sin(theta_motor)
-// where f is the forward offset, h is the vertical offset, and d is the raw range.
-// Deriving distance and pitch from this point keeps the range and angle self-consistent.
-Point3D scanPointFromSensorReading(float rawMm, float yawDeg, float motorPitchDeg) {
-    const float pitchRad = motorPitchDeg * DEG_TO_RAD;
-    const float pitchPlaneX =
-        Config::kSensorFaceOffsetMm + rawMm * cosf(pitchRad);
-    const float pitchPlaneZ =
-        Config::kSensorAboveAxisMm + rawMm * sinf(pitchRad);
+Point3D sphericalToCartesian(float radiusMm, float yawDeg, float pitchDeg);
 
-    const float yawRad = yawDeg * DEG_TO_RAD;
-    const float cosYaw = cosf(yawRad);
-    const float sinYaw = sinf(yawRad);
-
-    Point3D point{};
-    point.x = pitchPlaneX * cosYaw;
-    point.y = pitchPlaneX * sinYaw;
-    point.z = pitchPlaneZ;
-    return point;
+float axisDistanceFromSensorReading(float rawMm) {
+    return rawMm + Config::kSensorFaceOffsetMm;
 }
 
-float distanceFromAxisMm(const Point3D& point) {
-    return sqrtf(point.x * point.x + point.y * point.y + point.z * point.z);
+float pitchFromSensorReading(float axisDistanceMm, float motorPitchDeg) {
+    if (axisDistanceMm <= 0.0f) {
+        return motorPitchDeg;
+    }
+    const float parallaxCorrectionDeg =
+        atanf(Config::kSensorAboveAxisMm / axisDistanceMm) / DEG_TO_RAD;
+    return motorPitchDeg + parallaxCorrectionDeg;
 }
 
-float pitchFromAxisDeg(const Point3D& point) {
-    const float horizontalMm = sqrtf(point.x * point.x + point.y * point.y);
-    return atan2f(point.z, horizontalMm) / DEG_TO_RAD;
+Point3D scanPointFromSensorReading(float axisDistanceMm, float yawDeg, float pitchDeg) {
+    return sphericalToCartesian(axisDistanceMm, yawDeg, pitchDeg);
 }
 
 struct ScanPoint {
@@ -825,13 +811,16 @@ public:
                 }
 
                 const float rawMm = static_cast<float>(distanceMm);
-                const Point3D hitPointMm = scanPointFromSensorReading(
-                    rawMm,
-                    yawAxis_.currentAngleDeg(),
+                const float axialMm = axisDistanceFromSensorReading(rawMm);
+                const float truePitchDeg = pitchFromSensorReading(
+                    axialMm,
                     pitchAxis_.currentAngleDeg()
                 );
-                const float axialMm = distanceFromAxisMm(hitPointMm);
-                const float truePitchDeg = pitchFromAxisDeg(hitPointMm);
+                const Point3D hitPointMm = scanPointFromSensorReading(
+                    axialMm,
+                    yawAxis_.currentAngleDeg(),
+                    truePitchDeg
+                );
 
                 ScanPoint point{};
                 point.frameId = frameId;

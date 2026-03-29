@@ -762,6 +762,7 @@
     let startPending = false;
     let requestedPlotMode = "raw";
     let lastDebrisClearingSeq = 0;
+    let lastClearedDebrisSeq = 0;
     const PAD_YAW_MIN = -360, PAD_YAW_MAX = 360;
     const PAD_PITCH_MIN = -60, PAD_PITCH_MAX = 60;
     const PAD_MARGIN = 28;
@@ -990,6 +991,18 @@
           detail: "Robot is moving to each debris centroid autonomously.",
           tone: "warn",
           timeoutMs: 6000,
+        });
+      }
+
+      const clearedSeq = status.cleared_debris_sequence ?? 0;
+      if (clearedSeq > lastClearedDebrisSeq) {
+        lastClearedDebrisSeq = clearedSeq;
+        const clusterId = status.last_cleared_cluster_id;
+        showAlarm({
+          title: "Shot fired",
+          detail: clusterId ? `Cleared ${clusterId}.` : "Debris clearing pulse sent.",
+          tone: "warn",
+          timeoutMs: 1000,
         });
       }
 

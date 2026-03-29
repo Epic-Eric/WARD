@@ -66,18 +66,14 @@ class RobotTcpHub:
     def stop(self) -> None:
         self._stop_event.set()
         with self._lock:
+            client_socket = self._client_socket
+            server_socket = self._server_socket
             if self._client_socket is not None:
-                try:
-                    self._client_socket.close()
-                except OSError:
-                    pass
                 self._client_socket = None
             if self._server_socket is not None:
-                try:
-                    self._server_socket.close()
-                except OSError:
-                    pass
                 self._server_socket = None
+        self._close_socket(client_socket)
+        self._close_socket(server_socket)
         if self._server_thread is not None:
             self._server_thread.join(timeout=2.0)
             self._server_thread = None
@@ -211,6 +207,7 @@ class RobotTcpHub:
     def _serve_forever(self) -> None:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         server_socket.bind((self.host, self.port))
         server_socket.listen(4)
         server_socket.settimeout(SOCKET_TIMEOUT_SECONDS)
@@ -247,6 +244,7 @@ class RobotTcpHub:
         peer = f"{address[0]}:{address[1]}"
         print(f"Accepted robot connection from {peer}")
         previous_socket: socket.socket | None = None
+        self._configure_client_socket(client_socket)
         with self._lock:
             previous_socket = self._client_socket
             self._client_socket = client_socket
@@ -258,11 +256,7 @@ class RobotTcpHub:
             self._last_event = f"Robot connected from {peer}"
             self._note_robot_activity_locked()
         if previous_socket is not None and previous_socket is not client_socket:
-            try:
-                previous_socket.close()
-            except OSError:
-                pass
-        client_socket.settimeout(SOCKET_TIMEOUT_SECONDS)
+            self._close_socket(previous_socket)
         buffer = ""
         try:
             while not self._stop_event.is_set():
@@ -284,10 +278,7 @@ class RobotTcpHub:
             if buffer.strip():
                 self._handle_robot_line(buffer.strip())
         finally:
-            try:
-                client_socket.close()
-            except OSError:
-                pass
+            self._close_socket(client_socket)
             self._disconnect_client(client_socket)
 
     def _disconnect_client(self, client_socket: socket.socket) -> None:
@@ -340,12 +331,7 @@ class RobotTcpHub:
             self._recorder.ensure_open()
         elif message_type == "POINT" and len(parts) == 9:
             self._recorder.write_point(parts[1:])
-            try:
-                point_index = int(parts[2])
-            except ValueError:
-                point_index = None
-            if point_index is not None and (point_index + 1) % 25 == 0:
-                self._recorder.flush()
+            self._recorder.flush_if_needed()
         elif message_type == "FRAME_END" and len(parts) >= 3:
             self._recorder.flush()
         with self._scan_condition:
@@ -561,11 +547,7 @@ class RobotTcpHub:
             stale_socket, should_close_recorder = self._expire_stale_client_locked(reason)
         if should_close_recorder:
             self._recorder.close()
-        if stale_socket is not None:
-            try:
-                stale_socket.close()
-            except OSError:
-                pass
+        self._close_socket(stale_socket)
 
     def _expire_stale_client_locked(
         self, reason: str
@@ -597,3 +579,24 @@ class RobotTcpHub:
             }
             self._scan_condition.notify_all()
         return stale_socket, True
+
+    def _configure_client_socket(self, client_socket: socket.socket) -> None:
+        client_socket.settimeout(SOCKET_TIMEOUT_SECONDS)
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(socket, "TCP_NODELAY"):
+            try:
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+
+    def _close_socket(self, sock: socket.socket | None) -> None:
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
